@@ -1,0 +1,1003 @@
+<!DOCTYPE html>
+<html lang="nl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="theme-color" content="#f8fafc" />
+    <title>Cadence</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        theme: {
+          extend: {
+            fontFamily: {
+              sans: ['Inter', 'ui-sans-serif', 'system-ui', 'sans-serif'],
+              mono: ['JetBrains Mono', 'ui-monospace', 'monospace'],
+            },
+            keyframes: {
+              'pop-in': {
+                '0%': { transform: 'scale(0.8)', opacity: '0' },
+                '70%': { transform: 'scale(1.05)' },
+                '100%': { transform: 'scale(1)', opacity: '1' },
+              },
+              'slide-up': {
+                '0%': { transform: 'translateY(16px)', opacity: '0' },
+                '100%': { transform: 'translateY(0)', opacity: '1' },
+              },
+            },
+            animation: {
+              'pop-in': 'pop-in 0.35s ease-out',
+              'slide-up': 'slide-up 0.25s ease-out',
+            },
+          },
+        },
+      };
+    </script>
+    <style>
+      body {
+        font-family: 'Inter', system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+        -moz-osx-font-smoothing: grayscale;
+        overscroll-behavior: none;
+      }
+      button { -webkit-tap-highlight-color: transparent; user-select: none; }
+      .pb-safe { padding-bottom: max(0.5rem, env(safe-area-inset-bottom)); }
+    </style>
+    <script src="https://unpkg.com/react@18.3.1/umd/react.development.js" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" crossorigin="anonymous"></script>
+    <script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" crossorigin="anonymous"></script>
+  </head>
+  <body class="bg-slate-50">
+    <div id="root"></div>
+
+    <script type="text/babel">
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// STORE — staat, XP/level, streak, gewicht, calorieën (localStorage)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+const STORAGE_KEY = 'cadence.fitness.v1';
+const XP_PER_SUCCESS = 250;
+const XP_BONUS_STREAK_MILESTONE = 500;
+
+const LEVEL_THRESHOLDS = Array.from({ length: 50 }, (_, i) => {
+  const lvl = i + 1;
+  return 200 * (lvl - 1) + 50 * (lvl - 1) * (lvl - 2);
+});
+
+function todayKey(d = new Date()) {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
+function levelForXp(xp) {
+  let lvl = 1;
+  for (let i = 0; i < LEVEL_THRESHOLDS.length; i++) {
+    if (xp >= LEVEL_THRESHOLDS[i]) lvl = i + 1; else break;
+  }
+  return lvl;
+}
+
+function xpProgress(xp) {
+  const lvl = levelForXp(xp);
+  const curThresh = LEVEL_THRESHOLDS[lvl - 1] ?? 0;
+  const nextThresh = LEVEL_THRESHOLDS[lvl] ?? curThresh + 1000;
+  const xpInLevel = xp - curThresh;
+  const xpForLevel = nextThresh - curThresh;
+  return {
+    level: lvl, xpInLevel, xpForLevel,
+    xpToNext: Math.max(0, nextThresh - xp),
+    pct: Math.min(100, (xpInLevel / xpForLevel) * 100),
+  };
+}
+
+function tierLabel(lvl) {
+  if (lvl < 5)  return 'Starter';
+  if (lvl < 10) return 'Consistent';
+  if (lvl < 20) return 'Dedicated';
+  if (lvl < 35) return 'Atleet';
+  return 'Elite';
+}
+
+function defaultState() {
+  return {
+    streak: 0, bestStreak: 0, totalXp: 0, calorieGoal: 2000,
+    today: { date: todayKey(), workout: false, calories: false, creatine: false, completed: false, success: false },
+    history: {}, workouts: {}, weights: {}, dailyCalories: {}, lastGain: null,
+  };
+}
+
+function saveState(s) {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(s)); } catch(e) {}
+}
+
+function loadState() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) return defaultState();
+    const parsed = JSON.parse(raw);
+    if (parsed.today?.date !== todayKey()) {
+      const prev = parsed.today;
+      if (prev && !prev.completed) {
+        parsed.history = parsed.history || {};
+        parsed.history[prev.date] = { workout: !!prev.workout, calories: !!prev.calories, creatine: !!prev.creatine, success: false, autoClosed: true };
+        parsed.streak = 0;
+      }
+      const todayCals = parsed.dailyCalories?.[todayKey()] || 0;
+      parsed.today = { date: todayKey(), workout: false, calories: todayCals >= (parsed.calorieGoal || 2000), creatine: false, completed: false, success: false };
+      saveState(parsed);
+    }
+    return { ...defaultState(), ...parsed };
+  } catch(e) { return defaultState(); }
+}
+
+function buildWeekWindow(state, days = 7) {
+  const out = [];
+  const today = new Date();
+  const DAY_LETTERS = ['Z','M','D','W','D','V','Z'];
+  for (let i = days - 1; i >= 0; i--) {
+    const d = new Date(today);
+    d.setDate(today.getDate() - i);
+    const key = todayKey(d);
+    const isToday = i === 0;
+    const entry = state.history[key];
+    let status, label;
+    if (isToday) {
+      const checks = [state.today.workout, state.today.calories, state.today.creatine].filter(Boolean).length;
+      if (state.today.completed) { status = state.today.success ? 'done' : 'missed'; label = state.today.success ? '✓' : '✗'; }
+      else { status = 'today'; label = `${checks}/3`; }
+    } else if (!entry) {
+      status = 'rest'; label = '·';
+    } else if (entry.success) {
+      status = 'done'; label = '✓';
+    } else {
+      const got = [entry.workout, entry.calories, entry.creatine].filter(Boolean).length;
+      status = 'missed'; label = got > 0 ? `${got}/3` : '✗';
+    }
+    out.push({ dayLetter: DAY_LETTERS[d.getDay()], date: d.getDate(), key, status, label, isToday });
+  }
+  return out;
+}
+
+const StoreContext = React.createContext(null);
+
+function StoreProvider({ children }) {
+  const [state, setState] = React.useState(() => loadState());
+
+  React.useEffect(() => { saveState(state); }, [state]);
+  React.useEffect(() => {
+    const onFocus = () => { if (state.today.date !== todayKey()) setState(loadState()); };
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, [state.today.date]);
+
+  const toggleCheck = (key) => setState(s => s.today.completed ? s : { ...s, today: { ...s.today, [key]: !s.today[key] } });
+
+  const completeDay = () => setState(s => {
+    if (s.today.completed) return s;
+    const success = s.today.workout && s.today.calories && s.today.creatine;
+    const newStreak = success ? s.streak + 1 : 0;
+    const milestoneBonus = success && newStreak > 0 && newStreak % 7 === 0 ? XP_BONUS_STREAK_MILESTONE : 0;
+    const xpGained = success ? XP_PER_SUCCESS + milestoneBonus : 0;
+    const prevLevel = levelForXp(s.totalXp);
+    const newXp = s.totalXp + xpGained;
+    const newLevel = levelForXp(newXp);
+    return {
+      ...s, streak: newStreak, bestStreak: Math.max(s.bestStreak, newStreak), totalXp: newXp,
+      today: { ...s.today, completed: true, success },
+      history: { ...s.history, [s.today.date]: { workout: s.today.workout, calories: s.today.calories, creatine: s.today.creatine, success } },
+      lastGain: { xp: xpGained, success, milestone: milestoneBonus > 0, levelUp: newLevel > prevLevel, newLevel, newStreak },
+    };
+  });
+
+  const resetDay = () => setState(s => ({
+    ...s, today: { date: todayKey(), workout: false, calories: false, creatine: false, completed: false, success: false }, lastGain: null,
+  }));
+
+  const dismissGain = () => setState(s => ({ ...s, lastGain: null }));
+
+  const resetAll = () => { if (!confirm('Reset all progress? This cannot be undone.')) return; setState(defaultState()); };
+
+  const setWorkout = (date, title) => setState(s => {
+    const next = { ...(s.workouts || {}) };
+    const trimmed = (title || '').trim();
+    if (!trimmed) { delete next[date]; }
+    else { const ex = next[date] || {}; next[date] = { title: trimmed, completed: !!ex.completed, createdAt: ex.createdAt || new Date().toISOString(), completedAt: ex.completedAt || null }; }
+    return { ...s, workouts: next };
+  });
+
+  const toggleWorkoutComplete = (date) => setState(s => {
+    const w = s.workouts?.[date]; if (!w) return s;
+    const completed = !w.completed;
+    const next = { ...s.workouts, [date]: { ...w, completed, completedAt: completed ? new Date().toISOString() : null } };
+    const isToday = date === todayKey();
+    const todayPatch = isToday && !s.today.completed ? { today: { ...s.today, workout: completed } } : {};
+    return { ...s, workouts: next, ...todayPatch };
+  });
+
+  const deleteWorkout = (date) => setState(s => { const next = { ...(s.workouts || {}) }; delete next[date]; return { ...s, workouts: next }; });
+
+  const logWeight = (date, kg) => setState(s => {
+    const parsed = parseFloat(String(kg).replace(',', '.'));
+    if (isNaN(parsed) || parsed <= 0) return s;
+    return { ...s, weights: { ...s.weights, [date]: Math.round(parsed * 10) / 10 } };
+  });
+
+  const deleteWeight = (date) => setState(s => { const next = { ...s.weights }; delete next[date]; return { ...s, weights: next }; });
+
+  const logCalories = (date, kcal) => setState(s => {
+    const parsed = parseInt(String(kcal), 10);
+    if (isNaN(parsed) || parsed < 0) return s;
+    const next = { ...s.dailyCalories, [date]: parsed };
+    const isToday = date === todayKey();
+    const meetsGoal = parsed >= s.calorieGoal;
+    const todayPatch = isToday && !s.today.completed ? { today: { ...s.today, calories: meetsGoal } } : {};
+    return { ...s, dailyCalories: next, ...todayPatch };
+  });
+
+  const setCalorieGoal = (goal) => setState(s => {
+    const parsed = parseInt(String(goal), 10);
+    if (isNaN(parsed) || parsed <= 0) return s;
+    const todayCals = s.dailyCalories[todayKey()] || 0;
+    const todayPatch = !s.today.completed ? { today: { ...s.today, calories: todayCals >= parsed } } : {};
+    return { ...s, calorieGoal: parsed, ...todayPatch };
+  });
+
+  const value = {
+    state, toggleCheck, completeDay, resetDay, dismissGain, resetAll,
+    setWorkout, toggleWorkoutComplete, deleteWorkout,
+    logWeight, deleteWeight, logCalories, setCalorieGoal,
+    progress: xpProgress(state.totalXp), XP_PER_SUCCESS, todayKey,
+  };
+
+  return <StoreContext.Provider value={value}>{children}</StoreContext.Provider>;
+}
+
+function useStore() {
+  const ctx = React.useContext(StoreContext);
+  if (!ctx) throw new Error('useStore must be used inside StoreProvider');
+  return ctx;
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// UI PRIMITIVES
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Card({ children, className = '' }) {
+  return <div className={`bg-white rounded-2xl border border-slate-100 shadow-sm ${className}`}>{children}</div>;
+}
+
+function Button({ children, variant = 'primary', className = '', disabled, ...rest }) {
+  const base = 'inline-flex items-center justify-center gap-2 rounded-xl font-semibold transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed select-none';
+  const variants = {
+    primary:   'bg-slate-900 text-white py-3 px-5 text-sm',
+    secondary: 'bg-slate-100 text-slate-700 py-3 px-5 text-sm',
+    ghost:     'text-slate-500 py-2 px-3 text-sm hover:text-slate-900 hover:bg-slate-50',
+    danger:    'bg-red-50 text-red-600 py-2.5 px-4 text-sm',
+    brand:     'bg-teal-500 text-white py-3 px-5 text-sm shadow-sm',
+  };
+  return <button className={`${base} ${variants[variant] || variants.primary} ${className}`} disabled={disabled} {...rest}>{children}</button>;
+}
+
+function Input({ className = '', ...rest }) {
+  return (
+    <input className={`w-full px-4 py-3 rounded-xl border border-slate-200 bg-white text-slate-900 text-base
+      focus:outline-none focus:ring-2 focus:ring-teal-400 focus:border-transparent transition-shadow
+      placeholder:text-slate-300 ${className}`} {...rest} />
+  );
+}
+
+function ProgressBar({ value, max, color = 'teal', className = '' }) {
+  const pct = Math.min(100, Math.round((value / Math.max(max, 1)) * 100));
+  const colors = { teal: '#14b8a6', green: '#22c55e', amber: '#f59e0b', violet: '#8b5cf6', red: '#f87171' };
+  return (
+    <div className={`rounded-full bg-slate-100 overflow-hidden ${className}`}>
+      <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: colors[color] || colors.teal }} />
+    </div>
+  );
+}
+
+function Badge({ children, color = 'slate' }) {
+  const colors = {
+    slate: 'bg-slate-100 text-slate-600', green: 'bg-green-50 text-green-700',
+    red: 'bg-red-50 text-red-600',        amber: 'bg-amber-50 text-amber-700',
+    teal: 'bg-teal-50 text-teal-700',     violet: 'bg-violet-50 text-violet-700',
+  };
+  return <span className={`text-xs font-semibold px-2.5 py-1 rounded-lg ${colors[color] || colors.slate}`}>{children}</span>;
+}
+
+function SectionLabel({ children }) {
+  return <p className="text-xs font-bold uppercase tracking-widest text-slate-400 px-1 mb-2">{children}</p>;
+}
+
+function Stat({ label, value, unit, hint }) {
+  return (
+    <Card className="p-3 text-center">
+      <div className="text-xs font-semibold text-slate-400 mb-1">{label}</div>
+      <div className="flex items-baseline gap-1 justify-center">
+        <div className="text-2xl font-bold font-mono text-slate-900">{value}</div>
+        {unit && <div className="text-xs text-slate-400">{unit}</div>}
+      </div>
+      {hint && <div className="text-xs text-slate-400 mt-1">{hint}</div>}
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CELEBRATION — overlay bij dag afsluiten
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Celebration({ gain, onDismiss }) {
+  if (!gain) return null;
+  const isSuccess = gain.success;
+  const emoji = gain.levelUp ? '🏆' : isSuccess ? '🔥' : '😤';
+  const title = gain.levelUp ? `Level ${gain.newLevel}!` : isSuccess ? 'Dag voltooid!' : 'Dag gemist';
+  return (
+    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onDismiss}>
+      <div className="bg-white rounded-t-3xl sm:rounded-3xl px-8 pt-8 pb-10 w-full sm:max-w-sm text-center animate-pop-in shadow-2xl" onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mb-6 sm:hidden" />
+        <div className="text-7xl mb-4 animate-slide-up">{emoji}</div>
+        <h2 className="text-2xl font-bold text-slate-900 mb-2">{title}</h2>
+        {isSuccess ? (
+          <>
+            <p className="text-teal-600 font-mono text-3xl font-bold mt-1">+{gain.xp} XP</p>
+            {gain.milestone && (
+              <div className="mt-3 bg-amber-50 rounded-xl px-4 py-2.5">
+                <p className="text-amber-600 font-semibold text-sm">🏅 7-daagse milestone! +500 bonus XP</p>
+              </div>
+            )}
+            {gain.levelUp && (
+              <div className="mt-3 bg-violet-50 rounded-xl px-4 py-2.5">
+                <p className="text-violet-600 font-semibold text-sm">⬆️ Level up naar level {gain.newLevel}!</p>
+              </div>
+            )}
+            {gain.newStreak > 1 && <p className="text-slate-400 text-sm mt-4">🔥 {gain.newStreak} dagen streak — blijf zo!</p>}
+          </>
+        ) : (
+          <p className="text-slate-500 text-sm mt-2 leading-relaxed">Je hebt niet alle doelen gehaald. Je streak is gereset. Probeer het morgen opnieuw!</p>
+        )}
+        <button onClick={onDismiss} className="mt-7 w-full py-4 bg-slate-900 text-white rounded-2xl font-semibold text-base active:scale-95 transition-transform">
+          Doorgaan
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// NAVBAR — vaste onderste tabbalk
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Navbar({ current, onChange }) {
+  const tabs = [
+    { id: 'dashboard', label: 'Home', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg> },
+    { id: 'workout', label: 'Workout', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg> },
+    { id: 'weight', label: 'Gewicht', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="22 7 13.5 15.5 8.5 10.5 2 17"/><polyline points="16 7 22 7 22 13"/></svg> },
+    { id: 'calories', label: 'Calorieën', icon: <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M8.5 14.5A2.5 2.5 0 0011 12c0-1.38-.5-2-1-3-1.072-2.143-.224-4.054 2-6 .5 2.5 2 4.9 4 6.5 2 1.6 3 3.5 3 5.5a7 7 0 11-14 0c0-1.153.433-2.294 1-3a2.5 2.5 0 002.5 3z"/></svg> },
+  ];
+  return (
+    <nav className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 z-40" style={{ paddingBottom: 'max(0.5rem, env(safe-area-inset-bottom))' }}>
+      <div className="max-w-lg mx-auto flex">
+        {tabs.map(({ id, label, icon }) => {
+          const active = current === id;
+          return (
+            <button key={id} onClick={() => onChange(id)}
+              className={`flex-1 flex flex-col items-center pt-2.5 pb-1 gap-1 relative transition-colors ${active ? 'text-teal-600' : 'text-slate-400'}`}>
+              {active && <span className="absolute top-0 left-1/2 -translate-x-1/2 w-8 h-0.5 rounded-full" style={{ background: '#14b8a6' }} />}
+              {icon}
+              <span className={`text-[10px] font-bold tracking-wide leading-none ${active ? 'text-teal-600' : 'text-slate-400'}`}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </nav>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function Dashboard() {
+  const { state, toggleCheck, completeDay, resetDay, resetAll, progress } = useStore();
+  const week = buildWeekWindow(state, 7);
+  const today = state.today;
+  const checksCount = [today.workout, today.calories, today.creatine].filter(Boolean).length;
+  const allChecked = checksCount === 3;
+  const weightEntries = Object.entries(state.weights || {}).sort();
+  const latestWeight = weightEntries.length ? weightEntries[weightEntries.length - 1][1] : null;
+  const todayCals = state.dailyCalories?.[today.date] || 0;
+  const calPct = Math.min(100, (todayCals / state.calorieGoal) * 100);
+  const dateStr = new Date().toLocaleDateString('nl-BE', { weekday: 'long', day: 'numeric', month: 'long' });
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-start justify-between pt-2">
+        <div>
+          <p className="text-xs font-bold text-slate-400 uppercase tracking-widest capitalize">{dateStr}</p>
+          <h1 className="text-2xl font-bold text-slate-900 mt-0.5">Dashboard</h1>
+        </div>
+        <button onClick={resetAll} className="text-xs text-slate-300 hover:text-slate-500 mt-2 transition-colors">Reset</button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <StreakCard streak={state.streak} best={state.bestStreak} />
+        <LevelCard progress={progress} totalXp={state.totalXp} />
+      </div>
+
+      <DailyChecksCard today={today} checksCount={checksCount} allChecked={allChecked} toggleCheck={toggleCheck} completeDay={completeDay} resetDay={resetDay} />
+
+      <WeekGrid week={week} />
+
+      <div className="grid grid-cols-2 gap-3">
+        <Card className="p-4">
+          <p className="text-xs text-slate-400 font-semibold mb-1">Gewicht</p>
+          {latestWeight ? (
+            <>
+              <p className="text-2xl font-bold font-mono text-slate-900">{latestWeight}<span className="text-sm font-normal text-slate-400 ml-1">kg</span></p>
+              <p className="text-xs text-slate-400 mt-0.5">Laatste meting</p>
+            </>
+          ) : <p className="text-sm text-slate-300 mt-2">Nog niet gelogd</p>}
+        </Card>
+        <Card className="p-4">
+          <p className="text-xs text-slate-400 font-semibold mb-1">Calorieën vandaag</p>
+          <p className="text-2xl font-bold font-mono text-slate-900">{todayCals.toLocaleString('nl-BE')}<span className="text-xs font-normal text-slate-400 ml-1">/ {state.calorieGoal.toLocaleString('nl-BE')}</span></p>
+          <ProgressBar value={todayCals} max={state.calorieGoal} color={calPct >= 100 ? 'green' : 'teal'} className="h-1.5 mt-2" />
+        </Card>
+      </div>
+
+      <Card className="p-4 flex items-center justify-between">
+        <div>
+          <p className="text-xs text-slate-400 font-semibold">Totaal XP</p>
+          <p className="text-xl font-bold font-mono mt-0.5" style={{ color: '#8b5cf6' }}>{state.totalXp.toLocaleString('nl-BE')}</p>
+        </div>
+        <div className="text-right">
+          <p className="text-xs text-slate-400 font-semibold">Dagen gelogd</p>
+          <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">{Object.keys(state.history).length}</p>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+function StreakCard({ streak, best }) {
+  const flames = streak >= 30 ? '🔥🔥🔥' : streak >= 14 ? '🔥🔥' : streak >= 3 ? '🔥' : '';
+  return (
+    <Card className="p-4">
+      <p className="text-xs text-slate-400 font-semibold mb-2">Streak</p>
+      <div className="flex items-baseline gap-1">
+        <span className="text-4xl font-bold font-mono text-slate-900">{streak}</span>
+        <span className="text-sm text-slate-400">d</span>
+      </div>
+      <p className="text-xl mt-1 leading-none">{flames || (streak === 0 ? '—' : '🔥')}</p>
+      <p className="text-xs text-slate-400 mt-2">Record: {best}d</p>
+    </Card>
+  );
+}
+
+function LevelCard({ progress, totalXp }) {
+  const { level, xpInLevel, xpForLevel, pct } = progress;
+  return (
+    <Card className="p-4">
+      <p className="text-xs text-slate-400 font-semibold mb-2">Level</p>
+      <div className="flex items-center gap-2.5 mb-3">
+        <div className="w-11 h-11 rounded-xl flex items-center justify-center text-white font-bold font-mono text-xl shrink-0" style={{ background: '#8b5cf6' }}>{level}</div>
+        <div>
+          <p className="text-sm font-bold text-slate-900 leading-tight">{tierLabel(level)}</p>
+          <p className="text-xs text-slate-400 font-mono">{totalXp.toLocaleString('nl-BE')} xp</p>
+        </div>
+      </div>
+      <ProgressBar value={xpInLevel} max={xpForLevel} color="violet" className="h-2" />
+      <p className="text-[11px] text-slate-400 mt-1.5 font-mono text-right">{xpInLevel}/{xpForLevel}</p>
+    </Card>
+  );
+}
+
+function DailyChecksCard({ today, checksCount, allChecked, toggleCheck, completeDay, resetDay }) {
+  const items = [
+    { key: 'workout',  label: 'Workout gedaan',       icon: '💪', hint: 'Elke sessie telt' },
+    { key: 'calories', label: 'Caloriedoel gehaald',  icon: '🥗', hint: 'Binnen je doel' },
+    { key: 'creatine', label: 'Creatine genomen',     icon: '💊', hint: '5g per dag' },
+  ];
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-4">
+        <div>
+          <h2 className="font-bold text-slate-900">Vandaag</h2>
+          <p className="text-xs text-slate-400 mt-0.5">{checksCount}/3 doelen afgevinkt</p>
+        </div>
+        {today.completed
+          ? <Badge color={today.success ? 'green' : 'red'}>{today.success ? '✓ Gelukt' : '✗ Gemist'}</Badge>
+          : <div className="flex gap-1.5">{[0,1,2].map(i => <div key={i} className={`w-2 h-2 rounded-full transition-colors ${i < checksCount ? 'bg-teal-500' : 'bg-slate-200'}`} />)}</div>
+        }
+      </div>
+      <ul className="space-y-2.5 mb-4">
+        {items.map(({ key, label, icon, hint }) => {
+          const checked = today[key];
+          return (
+            <li key={key}>
+              <button onClick={() => toggleCheck(key)} disabled={today.completed}
+                className={`w-full flex items-center gap-3 p-3.5 rounded-xl border-2 transition-all active:scale-[0.98] text-left
+                  ${checked ? 'border-teal-500 bg-teal-50' : 'border-slate-100 bg-slate-50'}
+                  ${today.completed ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+                <span className="text-xl">{icon}</span>
+                <div className="flex-1 min-w-0">
+                  <span className={`block text-sm font-semibold ${checked ? 'text-teal-700 line-through' : 'text-slate-800'}`}>{label}</span>
+                  <span className="text-xs text-slate-400">{hint}</span>
+                </div>
+                <div className={`w-6 h-6 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${checked ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
+                  {checked && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+      {today.completed ? (
+        <div className={`flex items-center justify-between p-3.5 rounded-xl ${today.success ? 'bg-green-50' : 'bg-red-50'}`}>
+          <span className={`text-sm font-semibold ${today.success ? 'text-green-700' : 'text-red-600'}`}>
+            {today.success ? `🎉 +${XP_PER_SUCCESS} XP verdiend!` : '😤 Streak gereset.'}
+          </span>
+          <button onClick={resetDay} className="text-xs text-slate-400 hover:text-slate-600">Heropen</button>
+        </div>
+      ) : (
+        <Button onClick={completeDay} variant={allChecked ? 'brand' : 'secondary'} className="w-full">
+          {allChecked ? `✓ Dag afsluiten · +${XP_PER_SUCCESS} XP` : 'Dag afsluiten'}
+        </Button>
+      )}
+    </Card>
+  );
+}
+
+function WeekGrid({ week }) {
+  const bgColors = { done: '#14b8a6', missed: '#f87171', today: '#1e293b', rest: '#f1f5f9' };
+  const textColors = { done: 'white', missed: 'white', today: 'white', rest: '#94a3b8' };
+  const successCount = week.filter(d => d.status === 'done').length;
+  return (
+    <Card className="p-4">
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="font-bold text-slate-900">Laatste 7 dagen</h2>
+        <Badge color={successCount >= 5 ? 'green' : successCount >= 3 ? 'amber' : 'slate'}>{successCount}/7 gelukt</Badge>
+      </div>
+      <div className="grid grid-cols-7 gap-1.5">
+        {week.map(d => (
+          <div key={d.key} className="flex flex-col items-center gap-1">
+            <span className="text-[10px] font-bold text-slate-400 uppercase">{d.dayLetter}</span>
+            <div className="w-full aspect-square rounded-lg flex items-center justify-center"
+              style={{ background: bgColors[d.status], outline: d.isToday ? '2px solid #1e293b' : 'none', outlineOffset: '1px' }}>
+              <span className="text-[10px] font-bold" style={{ color: textColors[d.status] }}>{d.label}</span>
+            </div>
+            <span className="text-[9px] text-slate-300 font-mono">{d.date}</span>
+          </div>
+        ))}
+      </div>
+      <div className="flex gap-4 mt-3 justify-center">
+        {[{ color: '#14b8a6', label: 'Gelukt' }, { color: '#f87171', label: 'Gemist' }, { color: '#f1f5f9', label: 'Rust' }, { color: '#1e293b', label: 'Vandaag' }].map(({ color, label }) => (
+          <div key={label} className="flex items-center gap-1.5">
+            <div className="w-2 h-2 rounded-sm" style={{ background: color }} />
+            <span className="text-[10px] text-slate-400">{label}</span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// WORKOUT PLANNER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function WorkoutPlanner() {
+  const { state, setWorkout, toggleWorkoutComplete, deleteWorkout, todayKey } = useStore();
+  const today = todayKey();
+  const workouts = state.workouts || {};
+  const todayEntry = workouts[today];
+  const [draft, setDraft] = React.useState(todayEntry?.title || '');
+  const [editing, setEditing] = React.useState(!todayEntry);
+
+  React.useEffect(() => { setDraft(todayEntry?.title || ''); setEditing(!todayEntry); }, [todayEntry?.title]);
+
+  const save = () => { const t = draft.trim(); if (!t) return; setWorkout(today, t); setEditing(false); };
+
+  const history = Object.entries(workouts).filter(([d]) => d !== today).sort((a, b) => a[0] < b[0] ? 1 : -1);
+  const totalCount = Object.keys(workouts).length;
+  const completedCount = Object.values(workouts).filter(w => w.completed).length;
+  const rate = totalCount ? Math.round((completedCount / totalCount) * 100) : 0;
+
+  return (
+    <div className="space-y-4">
+      <div className="pt-2">
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">{new Date().toLocaleDateString('nl-BE', { weekday: 'long', day: 'numeric', month: 'long' })}</p>
+        <h1 className="text-2xl font-bold text-slate-900 mt-0.5">Workout Planner</h1>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Stat label="Gelogd" value={totalCount} unit="dagen" />
+        <Stat label="Gedaan" value={completedCount} unit={`van ${totalCount || 0}`} />
+        <Stat label="Score" value={totalCount ? `${rate}%` : '—'} />
+      </div>
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-slate-900">Vandaag</h2>
+          {todayEntry && <Badge color={todayEntry.completed ? 'green' : 'teal'}>{todayEntry.completed ? '✓ Klaar' : 'Gepland'}</Badge>}
+        </div>
+        {editing ? (
+          <div className="space-y-3">
+            <Input autoFocus value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} placeholder="bv. Borst & Biceps — bench, rows, 45 min" />
+            <div className="flex gap-2">
+              <Button onClick={save} variant="brand" className="flex-1">Opslaan</Button>
+              {todayEntry && <Button onClick={() => { setDraft(todayEntry.title); setEditing(false); }} variant="secondary">Annuleer</Button>}
+            </div>
+          </div>
+        ) : todayEntry ? (
+          <div className="space-y-3">
+            <div className="flex items-center gap-3">
+              <button onClick={() => toggleWorkoutComplete(today)}
+                className={`w-9 h-9 rounded-xl border-2 flex items-center justify-center transition-all active:scale-90 shrink-0 ${todayEntry.completed ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
+                {todayEntry.completed && <svg width="16" height="16" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+              </button>
+              <span className={`flex-1 text-base font-semibold ${todayEntry.completed ? 'line-through text-slate-400' : 'text-slate-900'}`}>{todayEntry.title}</span>
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={() => setEditing(true)} variant="secondary" className="flex-1">Bewerken</Button>
+              <Button onClick={() => { deleteWorkout(today); setDraft(''); setEditing(true); }} variant="danger">Verwijder</Button>
+            </div>
+          </div>
+        ) : (
+          <div className="text-center py-4">
+            <p className="text-sm text-slate-400 mb-4">Nog geen workout gepland voor vandaag.</p>
+            <Button onClick={() => setEditing(true)} variant="brand" className="w-full">+ Workout toevoegen</Button>
+          </div>
+        )}
+      </Card>
+
+      {history.length > 0 && (
+        <div>
+          <SectionLabel>Geschiedenis</SectionLabel>
+          <Card>
+            <ul className="divide-y divide-slate-100">
+              {history.map(([date, w]) => (
+                <li key={date} className="flex items-center gap-3 px-4 py-4">
+                  <button onClick={() => toggleWorkoutComplete(date)}
+                    className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center shrink-0 transition-all active:scale-90 ${w.completed ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
+                    {w.completed && <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                  </button>
+                  <div className="flex-1 min-w-0">
+                    <p className={`text-sm font-semibold truncate ${w.completed ? 'line-through text-slate-400' : 'text-slate-900'}`}>{w.title}</p>
+                    <p className="text-xs text-slate-400 font-mono mt-0.5">{fmtDate(date)}</p>
+                  </div>
+                  <button onClick={() => deleteWorkout(date)} className="text-slate-300 hover:text-red-400 transition-colors p-2 -mr-2">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </Card>
+        </div>
+      )}
+
+      {history.length === 0 && !todayEntry && (
+        <Card className="p-8 text-center"><p className="text-3xl mb-3">💪</p><p className="text-slate-400 text-sm">Plan je eerste workout en vink hem af als je klaar bent.</p></Card>
+      )}
+    </div>
+  );
+}
+
+function fmtDate(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('nl-BE', { weekday: 'short', day: 'numeric', month: 'short' });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GEWICHT TRACKER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function WeightTracker() {
+  const { state, logWeight, deleteWeight, todayKey } = useStore();
+  const today = todayKey();
+  const weights = state.weights || {};
+  const [input, setInput] = React.useState('');
+
+  const entries = Object.entries(weights).sort((a, b) => a[0] < b[0] ? -1 : 1);
+  const latestWeight = entries.length ? entries[entries.length - 1][1] : null;
+  const firstWeight  = entries.length > 1 ? entries[0][1] : null;
+  const totalChange  = latestWeight !== null && firstWeight !== null ? (latestWeight - firstWeight).toFixed(1) : null;
+  const todayLogged  = weights[today];
+
+  const handleLog = () => { const val = input.trim(); if (!val) return; logWeight(today, val); setInput(''); };
+
+  return (
+    <div className="space-y-4">
+      <div className="pt-2">
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Voortgang</p>
+        <h1 className="text-2xl font-bold text-slate-900 mt-0.5">Gewicht Tracker</h1>
+      </div>
+
+      <div className="grid grid-cols-3 gap-3">
+        <Stat label="Huidig" value={latestWeight ?? '—'} unit={latestWeight ? 'kg' : ''} />
+        <Stat label="Verandering" value={totalChange !== null ? (parseFloat(totalChange) > 0 ? `+${totalChange}` : totalChange) : '—'} unit={totalChange !== null ? 'kg' : ''} />
+        <Stat label="Metingen" value={entries.length} unit="totaal" />
+      </div>
+
+      <Card className="p-4">
+        <h2 className="font-bold text-slate-900 mb-3">{todayLogged ? `Vandaag: ${todayLogged} kg` : 'Log gewicht'}</h2>
+        <div className="flex gap-2">
+          <Input type="number" inputMode="decimal" step="0.1" min="30" max="300" value={input}
+            onChange={e => setInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLog()}
+            placeholder={todayLogged ? `${todayLogged} (overschrijven)` : 'bv. 75.5'} className="flex-1" />
+          <Button onClick={handleLog} variant="brand">Log</Button>
+        </div>
+        {todayLogged && <p className="text-xs text-slate-400 mt-2">Huidig: <span className="font-mono font-semibold">{todayLogged} kg</span>. Nieuw getal overschrijft.</p>}
+      </Card>
+
+      {entries.length >= 2 && (
+        <Card className="p-4">
+          <h2 className="font-bold text-slate-900 mb-4">Trend</h2>
+          <WeightChart entries={entries.slice(-30)} />
+        </Card>
+      )}
+      {entries.length === 1 && <Card className="p-4 text-center"><p className="text-slate-400 text-sm">Log nog 1 meting om de grafiek te zien.</p></Card>}
+
+      {entries.length > 0 && (
+        <div>
+          <SectionLabel>Geschiedenis</SectionLabel>
+          <Card>
+            <ul className="divide-y divide-slate-100">
+              {[...entries].reverse().slice(0, 20).map(([date, weight], i, arr) => {
+                const prevWeight = arr[i + 1]?.[1];
+                const delta = prevWeight !== undefined ? (weight - prevWeight).toFixed(1) : null;
+                const isToday = date === today;
+                return (
+                  <li key={date} className="flex items-center gap-3 px-4 py-3.5">
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2">
+                        <p className="text-sm font-bold font-mono text-slate-900">{weight} kg</p>
+                        {isToday && <Badge color="teal">Vandaag</Badge>}
+                      </div>
+                      <p className="text-xs text-slate-400 font-mono mt-0.5">{fmtDate(date)}</p>
+                    </div>
+                    {delta !== null && (
+                      <span className={`text-xs font-mono font-bold shrink-0 ${parseFloat(delta) < 0 ? 'text-green-500' : parseFloat(delta) > 0 ? 'text-red-400' : 'text-slate-400'}`}>
+                        {parseFloat(delta) > 0 ? `+${delta}` : delta} kg
+                      </span>
+                    )}
+                    <button onClick={() => deleteWeight(date)} className="text-slate-200 hover:text-red-400 transition-colors p-2 -mr-2 shrink-0">
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        </div>
+      )}
+
+      {entries.length === 0 && (
+        <Card className="p-10 text-center"><p className="text-4xl mb-3">⚖️</p><p className="text-slate-500 text-sm">Log je eerste gewicht om te beginnen met bijhouden.</p></Card>
+      )}
+    </div>
+  );
+}
+
+function WeightChart({ entries }) {
+  const values = entries.map(([, v]) => v);
+  const minV = Math.min(...values), maxV = Math.max(...values);
+  const range = maxV - minV || 1;
+  const W = 300, H = 110, padL = 36, padR = 8, padT = 8, padB = 20;
+  const plotW = W - padL - padR, plotH = H - padT - padB;
+
+  const pts = entries.map(([, val], i) => ({
+    x: padL + (entries.length > 1 ? i / (entries.length - 1) : 0.5) * plotW,
+    y: padT + plotH - ((val - minV) / range) * plotH,
+    val,
+  }));
+
+  const pathD = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const last = pts[pts.length - 1], first = pts[0];
+  const areaD = `${pathD} L${last.x.toFixed(1)},${(padT + plotH).toFixed(1)} L${first.x.toFixed(1)},${(padT + plotH).toFixed(1)}Z`;
+
+  return (
+    <svg viewBox={`0 0 ${W} ${H}`} style={{ width: '100%', height: 160 }}>
+      {[minV, (minV + maxV) / 2, maxV].map((v, i) => {
+        const y = padT + plotH - ((v - minV) / range) * plotH;
+        return (
+          <React.Fragment key={i}>
+            <line x1={padL} x2={W - padR} y1={y} y2={y} stroke="#f1f5f9" strokeWidth="1" />
+            <text x={padL - 4} y={y + 4} textAnchor="end" fontSize="7" fill="#94a3b8" fontFamily="monospace">{v.toFixed(1)}</text>
+          </React.Fragment>
+        );
+      })}
+      <path d={areaD} fill="#14b8a6" fillOpacity="0.08" />
+      <path d={pathD} fill="none" stroke="#14b8a6" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+      {pts.map((p, i) => <circle key={i} cx={p.x} cy={p.y} r="3" fill="#14b8a6" />)}
+      {entries.length >= 2 && <>
+        <text x={pts[0].x} y={H - 4} textAnchor="middle" fontSize="7" fill="#94a3b8" fontFamily="monospace">{fmtDateShort(entries[0][0])}</text>
+        <text x={pts[pts.length - 1].x} y={H - 4} textAnchor="middle" fontSize="7" fill="#94a3b8" fontFamily="monospace">{fmtDateShort(entries[entries.length - 1][0])}</text>
+      </>}
+    </svg>
+  );
+}
+
+function fmtDateShort(key) {
+  const [y, m, d] = key.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('nl-BE', { day: 'numeric', month: 'short' });
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// CALORIE TRACKER
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function CalorieTracker() {
+  const { state, logCalories, setCalorieGoal, toggleCheck, todayKey } = useStore();
+  const today = todayKey();
+  const todayCals = state.dailyCalories?.[today] || 0;
+  const goal = state.calorieGoal;
+  const pct = Math.min(100, (todayCals / goal) * 100);
+  const remaining = Math.max(0, goal - todayCals);
+  const creatineDone = state.today.creatine;
+
+  const [calorieInput, setCalorieInput] = React.useState('');
+  const [goalInput, setGoalInput]       = React.useState('');
+  const [editingGoal, setEditingGoal]   = React.useState(false);
+
+  const handleLogCalories = () => { const val = calorieInput.trim(); if (!val) return; logCalories(today, val); setCalorieInput(''); };
+  const handleSetGoal     = () => { const val = goalInput.trim(); if (!val) return; setCalorieGoal(val); setGoalInput(''); setEditingGoal(false); };
+
+  const history = Object.entries(state.dailyCalories || {}).sort((a, b) => a[0] < b[0] ? 1 : -1).slice(0, 14);
+  const calColor = pct >= 100 ? 'green' : pct >= 80 ? 'amber' : 'teal';
+
+  return (
+    <div className="space-y-4">
+      <div className="pt-2">
+        <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Vandaag</p>
+        <h1 className="text-2xl font-bold text-slate-900 mt-0.5">Calorieën</h1>
+      </div>
+
+      <Card className="p-5">
+        <div className="flex items-end justify-between mb-4">
+          <div>
+            <p className="text-xs text-slate-400 font-semibold mb-1">Vandaag gegeten</p>
+            <div className="flex items-baseline gap-1.5">
+              <span className="text-5xl font-bold font-mono text-slate-900">{todayCals.toLocaleString('nl-BE')}</span>
+              <span className="text-base text-slate-400 font-mono">kcal</span>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-xs text-slate-400 font-semibold">Doel</p>
+            <p className="text-2xl font-bold font-mono text-slate-900">{goal.toLocaleString('nl-BE')}</p>
+          </div>
+        </div>
+        <ProgressBar value={todayCals} max={goal} color={calColor} className="h-4 mb-3" />
+        <div className="flex items-center justify-between">
+          <span className={`text-sm font-bold ${pct >= 100 ? 'text-green-600' : 'text-slate-500'}`}>
+            {pct >= 100 ? '✓ Doel gehaald!' : `${remaining.toLocaleString('nl-BE')} kcal resterend`}
+          </span>
+          <span className="text-sm font-mono font-bold text-slate-400">{Math.round(pct)}%</span>
+        </div>
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="font-bold text-slate-900 mb-3">Log calorieën</h2>
+        <div className="flex gap-2">
+          <Input type="number" inputMode="numeric" min="0" max="10000" value={calorieInput}
+            onChange={e => setCalorieInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLogCalories()}
+            placeholder={todayCals > 0 ? `${todayCals} kcal (vervang)` : 'bv. 1800'} className="flex-1" />
+          <Button onClick={handleLogCalories} variant="brand">Log</Button>
+        </div>
+        {todayCals > 0 && <p className="text-xs text-slate-400 mt-2">Huidig: <span className="font-mono font-semibold">{todayCals.toLocaleString('nl-BE')} kcal</span>. Nieuw getal vervangt.</p>}
+      </Card>
+
+      <Card className="p-4">
+        <h2 className="font-bold text-slate-900 mb-3">Supplementen</h2>
+        <button onClick={() => toggleCheck('creatine')} disabled={state.today.completed}
+          className={`w-full flex items-center gap-4 rounded-xl border-2 p-4 transition-all active:scale-[0.98] text-left
+            ${creatineDone ? 'border-teal-500 bg-teal-50' : 'border-slate-100 bg-slate-50'}
+            ${state.today.completed ? 'opacity-60 cursor-not-allowed' : 'cursor-pointer'}`}>
+          <span className="text-2xl">💊</span>
+          <div className="flex-1">
+            <p className={`font-semibold ${creatineDone ? 'text-teal-700' : 'text-slate-800'}`}>Creatine vandaag genomen</p>
+            <p className="text-xs text-slate-400 mt-0.5">5g per dag aanbevolen</p>
+          </div>
+          <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center shrink-0 transition-all ${creatineDone ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
+            {creatineDone && <svg width="14" height="14" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+          </div>
+        </button>
+      </Card>
+
+      <Card className="p-4">
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-slate-900">Dagelijks doel</h2>
+          <button onClick={() => { setEditingGoal(!editingGoal); setGoalInput(''); }} className="text-xs font-semibold" style={{ color: '#14b8a6' }}>
+            {editingGoal ? 'Annuleer' : 'Wijzigen'}
+          </button>
+        </div>
+        {editingGoal ? (
+          <div className="space-y-3">
+            <Input type="number" inputMode="numeric" min="500" max="10000" value={goalInput}
+              onChange={e => setGoalInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleSetGoal()}
+              placeholder={`Huidig: ${goal.toLocaleString('nl-BE')} kcal`} autoFocus />
+            <Button onClick={handleSetGoal} variant="brand" className="w-full">Opslaan</Button>
+          </div>
+        ) : (
+          <div className="flex items-baseline gap-2">
+            <span className="text-3xl font-bold font-mono text-slate-900">{goal.toLocaleString('nl-BE')}</span>
+            <span className="text-slate-400 font-medium">kcal / dag</span>
+          </div>
+        )}
+      </Card>
+
+      {history.length > 0 && (
+        <div>
+          <SectionLabel>Geschiedenis (14 dagen)</SectionLabel>
+          <Card>
+            <ul className="divide-y divide-slate-100">
+              {history.map(([date, kcal]) => {
+                const met = kcal >= goal, dayPct = Math.round((kcal / goal) * 100), isToday = date === today;
+                return (
+                  <li key={date} className="px-4 py-3">
+                    <div className="flex items-center gap-3 mb-1.5">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2">
+                          <p className="text-sm font-bold font-mono text-slate-900">{kcal.toLocaleString('nl-BE')} kcal</p>
+                          {isToday && <Badge color="teal">Vandaag</Badge>}
+                        </div>
+                        <p className="text-xs text-slate-400 mt-0.5">{fmtDate(date)}</p>
+                      </div>
+                      <Badge color={met ? 'green' : dayPct >= 80 ? 'amber' : 'slate'}>{met ? '✓ Doel' : `${dayPct}%`}</Badge>
+                    </div>
+                    <ProgressBar value={kcal} max={goal} color={met ? 'green' : dayPct >= 80 ? 'amber' : 'teal'} className="h-1.5" />
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        </div>
+      )}
+
+      {history.length === 0 && (
+        <Card className="p-10 text-center"><p className="text-4xl mb-3">🥗</p><p className="text-slate-500 text-sm">Log je eerste calorieën om de geschiedenis te zien.</p></Card>
+      )}
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// APP
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function AppInner() {
+  const [page, setPage] = React.useState('dashboard');
+  const { state, dismissGain } = useStore();
+  const pages = { dashboard: <Dashboard />, workout: <WorkoutPlanner />, weight: <WeightTracker />, calories: <CalorieTracker /> };
+
+  return (
+    <div className="min-h-screen bg-slate-50 font-sans">
+      {state.lastGain && <Celebration gain={state.lastGain} onDismiss={dismissGain} />}
+      <main className="max-w-lg mx-auto px-4 pt-4 pb-24">{pages[page]}</main>
+      <Navbar current={page} onChange={setPage} />
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <StoreProvider>
+      <AppInner />
+    </StoreProvider>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+
+    </script>
+  </body>
+</html>
