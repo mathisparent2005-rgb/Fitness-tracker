@@ -66,6 +66,50 @@ const STORAGE_KEY = 'cadence.fitness.v1';
 const XP_PER_SUCCESS = 250;
 const XP_BONUS_STREAK_MILESTONE = 500;
 
+const PORTION_MULTIPLIERS = { klein: 0.8, normaal: 1.0, groot: 1.3 };
+
+const FOOD_CATEGORIES = [
+  { name: 'Ontbijt & Snacks', items: [
+    { name: 'Groot ei', kcal: 90 }, { name: 'Klein ei', kcal: 65 },
+    { name: 'Chocoladekoek verpakt', kcal: 300 }, { name: 'Banaan', kcal: 100 },
+  ]},
+  { name: 'Brood', items: [
+    { name: 'Bruine boterham (2 sneetjes)', kcal: 160 }, { name: 'Witte boterham (2 sneetjes)', kcal: 180 },
+    { name: 'Bruin sneetje', kcal: 80 }, { name: 'Wit sneetje', kcal: 90 },
+    { name: 'Half stokbrood', kcal: 300 },
+  ]},
+  { name: 'Warme snacks', items: [
+    { name: 'Croque monsieur', kcal: 450 }, { name: 'Panini', kcal: 600 },
+    { name: 'Viandel', kcal: 350 }, { name: 'Burger', kcal: 700 },
+    { name: 'Diepvriespizza', kcal: 850 }, { name: 'Kleine portie frieten', kcal: 350 },
+  ]},
+  { name: 'Gerechten', items: [
+    { name: 'Wrap met kip, ketchup en kaas', kcal: 600 }, { name: 'Spaghetti bolognese', kcal: 800 },
+    { name: 'Spaghetti carbonara', kcal: 900 }, { name: 'Lasagne', kcal: 800 },
+    { name: 'Kip met rijst in currysaus', kcal: 750 }, { name: 'Kleine portie groenten', kcal: 80 },
+    { name: 'Gevulde courgette met gehakt + pasta', kcal: 800 }, { name: 'Worst appelmoes patatten', kcal: 850 },
+    { name: 'Biefstuk met frieten en groentjes', kcal: 1000 }, { name: 'Bord wok', kcal: 750 },
+    { name: 'Gehaktballen in tomatensaus met frieten', kcal: 1000 }, { name: 'Spinaziepuree met boomstammetjes', kcal: 850 },
+    { name: 'Pastaschotel', kcal: 850 }, { name: 'Puree met wortels en gehakt', kcal: 700 },
+    { name: 'Witloof met ham en kaas', kcal: 650 }, { name: 'Vol-au-vent', kcal: 850 },
+    { name: 'Mosselen met friet', kcal: 1100 }, { name: 'Stoofvlees met friet', kcal: 1100 },
+  ]},
+];
+
+const BELEG_SCHELLETJES = [
+  { name: 'Salami', kcalPerSchel: 40 },
+  { name: 'Kaas', kcalPerSchel: 50 },
+  { name: 'Hespeworst', kcalPerSchel: 35 },
+  { name: 'Hesp', kcalPerSchel: 25 },
+  { name: 'Brie', kcalPerSchel: 60 },
+];
+
+const BELEG_SMEERBAAR = [
+  { name: 'Préparé',    kcal: { licht: 60,  normaal: 120, dik: 180 } },
+  { name: 'Krabsalade', kcal: { licht: 55,  normaal: 110, dik: 165 } },
+  { name: 'Vleessalade',kcal: { licht: 65,  normaal: 130, dik: 195 } },
+];
+
 const LEVEL_THRESHOLDS = Array.from({ length: 50 }, (_, i) => {
   const lvl = i + 1;
   return 200 * (lvl - 1) + 50 * (lvl - 1) * (lvl - 2);
@@ -111,7 +155,7 @@ function defaultState() {
   return {
     streak: 0, bestStreak: 0, totalXp: 0, calorieGoal: 2000,
     today: { date: todayKey(), workout: false, calories: false, creatine: false, completed: false, success: false },
-    history: {}, workouts: {}, weights: {}, dailyCalories: {}, lastGain: null,
+    history: {}, workouts: {}, weights: {}, dailyCalories: {}, dailyMuscles: {}, dailyFoodLog: {}, restDays: {}, dayNotes: {}, lastGain: null,
   };
 }
 
@@ -148,23 +192,48 @@ function buildWeekWindow(state, days = 7) {
     d.setDate(today.getDate() - i);
     const key = todayKey(d);
     const isToday = i === 0;
+    const isRest = !!(state.restDays?.[key]);
     const entry = state.history[key];
-    let status, label;
+    let status, label, goalPct;
     if (isToday) {
-      const checks = [state.today.workout, state.today.calories, state.today.creatine].filter(Boolean).length;
-      if (state.today.completed) { status = state.today.success ? 'done' : 'missed'; label = state.today.success ? '✓' : '✗'; }
-      else { status = 'today'; label = `${checks}/3`; }
+      const got = [state.today.workout, state.today.calories, state.today.creatine].filter(Boolean).length;
+      goalPct = Math.round((got / 3) * 100);
+      if (state.today.completed) {
+        status = state.today.success ? 'done' : 'missed';
+        label = state.today.success ? '✓' : got > 0 ? `${got}/3` : '✗';
+      } else {
+        status = 'today'; label = `${got}/3`;
+      }
+    } else if (isRest) {
+      status = 'rest'; label = 'R'; goalPct = -1;
     } else if (!entry) {
-      status = 'rest'; label = '·';
+      status = 'empty'; label = '·'; goalPct = -1;
     } else if (entry.success) {
-      status = 'done'; label = '✓';
+      status = 'done'; label = '✓'; goalPct = 100;
     } else {
       const got = [entry.workout, entry.calories, entry.creatine].filter(Boolean).length;
+      goalPct = Math.round((got / 3) * 100);
       status = 'missed'; label = got > 0 ? `${got}/3` : '✗';
     }
-    out.push({ dayLetter: DAY_LETTERS[d.getDay()], date: d.getDate(), key, status, label, isToday });
+    out.push({ dayLetter: DAY_LETTERS[d.getDay()], date: d.getDate(), key, status, label, isToday, isRest, goalPct });
   }
   return out;
+}
+
+function dayStatusColor(status, goalPct, isRest) {
+  if (isRest) return '#94a3b8';
+  if (status === 'today') return '#1e293b';
+  if (status === 'empty') return '#f1f5f9';
+  if (goalPct >= 100) return '#22c55e';
+  if (goalPct >= 66)  return '#86efac';
+  if (goalPct >= 33)  return '#fb923c';
+  return '#ef4444';
+}
+
+function dayTextColor(status, goalPct, isRest) {
+  if (status === 'empty') return '#94a3b8';
+  if (!isRest && goalPct >= 66 && goalPct < 100) return '#14532d';
+  return 'white';
 }
 
 const StoreContext = React.createContext(null);
@@ -210,8 +279,22 @@ function StoreProvider({ children }) {
     const next = { ...(s.workouts || {}) };
     const trimmed = (title || '').trim();
     if (!trimmed) { delete next[date]; }
-    else { const ex = next[date] || {}; next[date] = { title: trimmed, completed: !!ex.completed, createdAt: ex.createdAt || new Date().toISOString(), completedAt: ex.completedAt || null }; }
+    else { const ex = next[date] || {}; next[date] = { title: trimmed, completed: !!ex.completed, muscles: ex.muscles || [], createdAt: ex.createdAt || new Date().toISOString(), completedAt: ex.completedAt || null }; }
     return { ...s, workouts: next };
+  });
+
+  const toggleDailyMuscle = (date, muscle) => setState(s => {
+    const current = s.dailyMuscles?.[date] || [];
+    const muscles = current.includes(muscle) ? current.filter(m => m !== muscle) : [...current, muscle];
+    return { ...s, dailyMuscles: { ...(s.dailyMuscles || {}), [date]: muscles } };
+  });
+
+  const setDailyMuscles = (date, muscles) => setState(s => {
+    const next = { ...(s.dailyMuscles || {}), [date]: muscles };
+    const isToday = date === todayKey();
+    const workoutDone = muscles.length > 0;
+    const todayPatch = isToday && !s.today.completed ? { today: { ...s.today, workout: workoutDone } } : {};
+    return { ...s, dailyMuscles: next, ...todayPatch };
   });
 
   const toggleWorkoutComplete = (date) => setState(s => {
@@ -251,10 +334,60 @@ function StoreProvider({ children }) {
     return { ...s, calorieGoal: parsed, ...todayPatch };
   });
 
+  const addFoodItem = (date, item) => setState(s => {
+    const log = [...(s.dailyFoodLog?.[date] || []), item];
+    const total = log.reduce((sum, i) => sum + i.portionKcal, 0);
+    const isToday = date === todayKey();
+    const meetsGoal = total >= s.calorieGoal;
+    const todayPatch = isToday && !s.today.completed ? { today: { ...s.today, calories: meetsGoal } } : {};
+    return { ...s, dailyFoodLog: { ...(s.dailyFoodLog || {}), [date]: log }, dailyCalories: { ...s.dailyCalories, [date]: total }, ...todayPatch };
+  });
+
+  const deleteFoodItem = (date, index) => setState(s => {
+    const log = (s.dailyFoodLog?.[date] || []).filter((_, i) => i !== index);
+    const total = log.reduce((sum, i) => sum + i.portionKcal, 0);
+    const isToday = date === todayKey();
+    const meetsGoal = total >= s.calorieGoal;
+    const todayPatch = isToday && !s.today.completed ? { today: { ...s.today, calories: meetsGoal } } : {};
+    return { ...s, dailyFoodLog: { ...(s.dailyFoodLog || {}), [date]: log }, dailyCalories: { ...s.dailyCalories, [date]: total }, ...todayPatch };
+  });
+
+  const toggleRestDay = (date) => setState(s => {
+    const next = { ...(s.restDays || {}) };
+    if (next[date]) delete next[date]; else next[date] = true;
+    return { ...s, restDays: next };
+  });
+
+  const setDayNote = (date, note) => setState(s => ({
+    ...s, dayNotes: { ...(s.dayNotes || {}), [date]: note }
+  }));
+
+  const editDayChecks = (date, checks) => setState(s => {
+    if (date === todayKey()) {
+      if (s.today.completed) return s;
+      return { ...s, today: { ...s.today, ...checks } };
+    }
+    const existing = s.history[date] || {};
+    const merged = { ...existing, ...checks };
+    return { ...s, history: { ...s.history, [date]: { ...merged, success: !!(merged.workout && merged.calories && merged.creatine) } } };
+  });
+
+  const duplicateDay = (fromDate, toDate) => setState(s => {
+    const log = s.dailyFoodLog?.[fromDate] || [];
+    if (!log.length) return s;
+    const newLog = [...(s.dailyFoodLog?.[toDate] || []), ...log];
+    const total = newLog.reduce((sum, i) => sum + i.portionKcal, 0);
+    const isToday = toDate === todayKey();
+    const meetsGoal = total >= s.calorieGoal;
+    const todayPatch = isToday && !s.today.completed ? { today: { ...s.today, calories: meetsGoal } } : {};
+    return { ...s, dailyFoodLog: { ...(s.dailyFoodLog || {}), [toDate]: newLog }, dailyCalories: { ...s.dailyCalories, [toDate]: total }, ...todayPatch };
+  });
+
   const value = {
     state, toggleCheck, completeDay, resetDay, dismissGain, resetAll,
-    setWorkout, toggleWorkoutComplete, deleteWorkout,
-    logWeight, deleteWeight, logCalories, setCalorieGoal,
+    setWorkout, toggleWorkoutComplete, toggleDailyMuscle, setDailyMuscles, deleteWorkout,
+    logWeight, deleteWeight, logCalories, setCalorieGoal, addFoodItem, deleteFoodItem,
+    toggleRestDay, setDayNote, editDayChecks, duplicateDay,
     progress: xpProgress(state.totalXp), XP_PER_SUCCESS, todayKey,
   };
 
@@ -417,9 +550,13 @@ function Dashboard() {
   const todayCals = state.dailyCalories?.[today.date] || 0;
   const calPct = Math.min(100, (todayCals / state.calorieGoal) * 100);
   const dateStr = new Date().toLocaleDateString('nl-BE', { weekday: 'long', day: 'numeric', month: 'long' });
+  const [selectedDay, setSelectedDay] = React.useState(null);
+  const [showHistory, setShowHistory] = React.useState(false);
 
   return (
     <div className="space-y-4">
+      {selectedDay && <DayDetailModal dateKey={selectedDay} onClose={() => setSelectedDay(null)} />}
+      {showHistory && <HistoryView onClose={() => setShowHistory(false)} onDayClick={date => { setShowHistory(false); setSelectedDay(date); }} />}
       <div className="flex items-start justify-between pt-2">
         <div>
           <p className="text-xs font-bold text-slate-400 uppercase tracking-widest capitalize">{dateStr}</p>
@@ -435,7 +572,7 @@ function Dashboard() {
 
       <DailyChecksCard today={today} checksCount={checksCount} allChecked={allChecked} toggleCheck={toggleCheck} completeDay={completeDay} resetDay={resetDay} />
 
-      <WeekGrid week={week} />
+      <WeekGrid week={week} onDayClick={setSelectedDay} />
 
       <div className="grid grid-cols-2 gap-3">
         <Card className="p-4">
@@ -464,6 +601,9 @@ function Dashboard() {
           <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">{Object.keys(state.history).length}</p>
         </div>
       </Card>
+      <Button onClick={() => setShowHistory(true)} variant="secondary" className="w-full">
+        Bekijk volledige geschiedenis
+      </Button>
     </div>
   );
 }
@@ -557,9 +697,7 @@ function DailyChecksCard({ today, checksCount, allChecked, toggleCheck, complete
   );
 }
 
-function WeekGrid({ week }) {
-  const bgColors = { done: '#14b8a6', missed: '#f87171', today: '#1e293b', rest: '#f1f5f9' };
-  const textColors = { done: 'white', missed: 'white', today: 'white', rest: '#94a3b8' };
+function WeekGrid({ week, onDayClick }) {
   const successCount = week.filter(d => d.status === 'done').length;
   return (
     <Card className="p-4">
@@ -568,19 +706,28 @@ function WeekGrid({ week }) {
         <Badge color={successCount >= 5 ? 'green' : successCount >= 3 ? 'amber' : 'slate'}>{successCount}/7 gelukt</Badge>
       </div>
       <div className="grid grid-cols-7 gap-1.5">
-        {week.map(d => (
-          <div key={d.key} className="flex flex-col items-center gap-1">
-            <span className="text-[10px] font-bold text-slate-400 uppercase">{d.dayLetter}</span>
-            <div className="w-full aspect-square rounded-lg flex items-center justify-center"
-              style={{ background: bgColors[d.status], outline: d.isToday ? '2px solid #1e293b' : 'none', outlineOffset: '1px' }}>
-              <span className="text-[10px] font-bold" style={{ color: textColors[d.status] }}>{d.label}</span>
+        {week.map(d => {
+          const bg = dayStatusColor(d.status, d.goalPct, d.isRest);
+          const tc = dayTextColor(d.status, d.goalPct, d.isRest);
+          return (
+            <div key={d.key} className="flex flex-col items-center gap-1">
+              <span className="text-[10px] font-bold text-slate-400 uppercase">{d.dayLetter}</span>
+              <button onClick={() => onDayClick && onDayClick(d.key)}
+                className="w-full aspect-square rounded-lg flex items-center justify-center transition-transform active:scale-90"
+                style={{ background: bg, outline: d.isToday ? '2px solid #1e293b' : 'none', outlineOffset: '1px' }}>
+                <span className="text-[10px] font-bold" style={{ color: tc }}>{d.label}</span>
+              </button>
+              <span className="text-[9px] text-slate-300 font-mono">{d.date}</span>
             </div>
-            <span className="text-[9px] text-slate-300 font-mono">{d.date}</span>
-          </div>
-        ))}
+          );
+        })}
       </div>
-      <div className="flex gap-4 mt-3 justify-center">
-        {[{ color: '#14b8a6', label: 'Gelukt' }, { color: '#f87171', label: 'Gemist' }, { color: '#f1f5f9', label: 'Rust' }, { color: '#1e293b', label: 'Vandaag' }].map(({ color, label }) => (
+      <div className="flex flex-wrap gap-3 mt-3 justify-center">
+        {[
+          { color: '#22c55e', label: '3/3' }, { color: '#86efac', label: '2/3' },
+          { color: '#fb923c', label: '1/3' }, { color: '#ef4444', label: '0/3' },
+          { color: '#94a3b8', label: 'Rust' }, { color: '#1e293b', label: 'Vandaag' },
+        ].map(({ color, label }) => (
           <div key={label} className="flex items-center gap-1.5">
             <div className="w-2 h-2 rounded-sm" style={{ background: color }} />
             <span className="text-[10px] text-slate-400">{label}</span>
@@ -595,22 +742,64 @@ function WeekGrid({ week }) {
 // WORKOUT PLANNER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+const MUSCLE_GROUPS = ['Chest', 'Schouders', 'Voorarmen', 'Rug', 'Buikspieren', 'Benen', 'Biceps', 'Triceps'];
+
+function MuscleCheckboxes({ muscles = [], onToggle }) {
+  return (
+    <div className="grid grid-cols-2 gap-2">
+      {MUSCLE_GROUPS.map(m => {
+        const checked = muscles.includes(m);
+        return (
+          <button key={m} onClick={() => onToggle(m)}
+            className={`flex items-center gap-3 p-3 rounded-xl border-2 transition-all active:scale-[0.98] text-left
+              ${checked ? 'border-teal-500 bg-teal-50' : 'border-slate-100 bg-slate-50'}`}>
+            <div className={`w-5 h-5 rounded border-2 flex items-center justify-center shrink-0 transition-all
+              ${checked ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
+              {checked && <svg width="10" height="10" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+            </div>
+            <span className={`text-sm font-semibold ${checked ? 'text-teal-700' : 'text-slate-700'}`}>{m}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 function WorkoutPlanner() {
-  const { state, setWorkout, toggleWorkoutComplete, deleteWorkout, todayKey } = useStore();
+  const { state, setDailyMuscles, todayKey } = useStore();
   const today = todayKey();
-  const workouts = state.workouts || {};
-  const todayEntry = workouts[today];
-  const [draft, setDraft] = React.useState(todayEntry?.title || '');
-  const [editing, setEditing] = React.useState(!todayEntry);
+  const dailyMuscles = state.dailyMuscles || {};
+  const savedMuscles = dailyMuscles[today];
+  const isSaved = Array.isArray(savedMuscles) && savedMuscles.length > 0;
 
-  React.useEffect(() => { setDraft(todayEntry?.title || ''); setEditing(!todayEntry); }, [todayEntry?.title]);
+  const [draft, setDraft] = React.useState(isSaved ? savedMuscles : []);
+  const [editing, setEditing] = React.useState(!isSaved);
 
-  const save = () => { const t = draft.trim(); if (!t) return; setWorkout(today, t); setEditing(false); };
+  React.useEffect(() => {
+    const saved = dailyMuscles[today] || [];
+    setDraft(saved.length > 0 ? saved : []);
+    setEditing(saved.length === 0);
+  }, [today]);
 
-  const history = Object.entries(workouts).filter(([d]) => d !== today).sort((a, b) => a[0] < b[0] ? 1 : -1);
-  const totalCount = Object.keys(workouts).length;
-  const completedCount = Object.values(workouts).filter(w => w.completed).length;
-  const rate = totalCount ? Math.round((completedCount / totalCount) * 100) : 0;
+  const toggleDraft = (muscle) =>
+    setDraft(prev => prev.includes(muscle) ? prev.filter(m => m !== muscle) : [...prev, muscle]);
+
+  const handleSave = () => { if (!draft.length) return; setDailyMuscles(today, draft); setEditing(false); };
+  const handleEdit = () => { setDraft(savedMuscles || []); setEditing(true); };
+  const handleDelete = () => { setDailyMuscles(today, []); setDraft([]); setEditing(true); };
+
+  const allDone = Object.entries(dailyMuscles).filter(([, m]) => Array.isArray(m) && m.length > 0);
+  const totalLogged = allDone.length;
+
+  const today_js = new Date();
+  const weekKeys = Array.from({ length: 7 }, (_, i) => {
+    const d = new Date(today_js); d.setDate(today_js.getDate() - i);
+    return [d.getFullYear(), String(d.getMonth() + 1).padStart(2, '0'), String(d.getDate()).padStart(2, '0')].join('-');
+  });
+  const thisWeekCount = weekKeys.filter(k => (dailyMuscles[k] || []).length > 0).length;
+  const score = Math.round((thisWeekCount / 7) * 100);
+
+  const history = allDone.filter(([d]) => d !== today).sort((a, b) => b[0].localeCompare(a[0]));
 
   return (
     <div className="space-y-4">
@@ -620,42 +809,42 @@ function WorkoutPlanner() {
       </div>
 
       <div className="grid grid-cols-3 gap-3">
-        <Stat label="Gelogd" value={totalCount} unit="dagen" />
-        <Stat label="Gedaan" value={completedCount} unit={`van ${totalCount || 0}`} />
-        <Stat label="Score" value={totalCount ? `${rate}%` : '—'} />
+        <Stat label="Gelogd" value={totalLogged} unit="dagen" />
+        <Stat label="Deze week" value={`${thisWeekCount}/7`} />
+        <Stat label="Score" value={totalLogged ? `${score}%` : '—'} />
       </div>
 
       <Card className="p-4">
-        <div className="flex items-center justify-between mb-3">
+        <div className="flex items-center justify-between mb-4">
           <h2 className="font-bold text-slate-900">Vandaag</h2>
-          {todayEntry && <Badge color={todayEntry.completed ? 'green' : 'teal'}>{todayEntry.completed ? '✓ Klaar' : 'Gepland'}</Badge>}
+          {isSaved && !editing && <Badge color="green">✓ Gedaan</Badge>}
         </div>
         {editing ? (
-          <div className="space-y-3">
-            <Input autoFocus value={draft} onChange={e => setDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && save()} placeholder="bv. Borst & Biceps — bench, rows, 45 min" />
-            <div className="flex gap-2">
-              <Button onClick={save} variant="brand" className="flex-1">Opslaan</Button>
-              {todayEntry && <Button onClick={() => { setDraft(todayEntry.title); setEditing(false); }} variant="secondary">Annuleer</Button>}
-            </div>
-          </div>
-        ) : todayEntry ? (
-          <div className="space-y-3">
-            <div className="flex items-center gap-3">
-              <button onClick={() => toggleWorkoutComplete(today)}
-                className={`w-9 h-9 rounded-xl border-2 flex items-center justify-center transition-all active:scale-90 shrink-0 ${todayEntry.completed ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
-                {todayEntry.completed && <svg width="16" height="16" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-              </button>
-              <span className={`flex-1 text-base font-semibold ${todayEntry.completed ? 'line-through text-slate-400' : 'text-slate-900'}`}>{todayEntry.title}</span>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => setEditing(true)} variant="secondary" className="flex-1">Bewerken</Button>
-              <Button onClick={() => { deleteWorkout(today); setDraft(''); setEditing(true); }} variant="danger">Verwijder</Button>
+          <div className="space-y-4">
+            <p className="text-sm text-slate-500">Vink de spiergroepen aan die je vandaag hebt getraind.</p>
+            <MuscleCheckboxes muscles={draft} onToggle={toggleDraft} />
+            <div className="flex gap-2 pt-1">
+              <Button onClick={handleSave} variant={draft.length > 0 ? 'brand' : 'secondary'} className="flex-1" disabled={draft.length === 0}>
+                Opslaan
+              </Button>
+              {isSaved && (
+                <Button onClick={() => { setDraft(savedMuscles); setEditing(false); }} variant="secondary">
+                  Annuleer
+                </Button>
+              )}
             </div>
           </div>
         ) : (
-          <div className="text-center py-4">
-            <p className="text-sm text-slate-400 mb-4">Nog geen workout gepland voor vandaag.</p>
-            <Button onClick={() => setEditing(true)} variant="brand" className="w-full">+ Workout toevoegen</Button>
+          <div className="space-y-3">
+            <div className="flex flex-wrap gap-2 pb-1">
+              {(savedMuscles || []).map(m => (
+                <span key={m} className="bg-teal-50 text-teal-700 font-semibold text-sm px-3 py-1.5 rounded-xl">{m}</span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <Button onClick={handleEdit} variant="secondary" className="flex-1">Bewerken</Button>
+              <Button onClick={handleDelete} variant="danger">Wis</Button>
+            </div>
           </div>
         )}
       </Card>
@@ -665,19 +854,14 @@ function WorkoutPlanner() {
           <SectionLabel>Geschiedenis</SectionLabel>
           <Card>
             <ul className="divide-y divide-slate-100">
-              {history.map(([date, w]) => (
-                <li key={date} className="flex items-center gap-3 px-4 py-4">
-                  <button onClick={() => toggleWorkoutComplete(date)}
-                    className={`w-7 h-7 rounded-lg border-2 flex items-center justify-center shrink-0 transition-all active:scale-90 ${w.completed ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
-                    {w.completed && <svg width="12" height="12" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
-                  </button>
-                  <div className="flex-1 min-w-0">
-                    <p className={`text-sm font-semibold truncate ${w.completed ? 'line-through text-slate-400' : 'text-slate-900'}`}>{w.title}</p>
-                    <p className="text-xs text-slate-400 font-mono mt-0.5">{fmtDate(date)}</p>
+              {history.map(([date, muscles]) => (
+                <li key={date} className="px-4 py-3.5">
+                  <p className="text-xs text-slate-400 font-mono mb-2">{fmtDate(date)}</p>
+                  <div className="flex flex-wrap gap-1.5">
+                    {muscles.map(m => (
+                      <span key={m} className="text-xs bg-teal-50 text-teal-600 font-semibold px-2.5 py-1 rounded-lg">{m}</span>
+                    ))}
                   </div>
-                  <button onClick={() => deleteWorkout(date)} className="text-slate-300 hover:text-red-400 transition-colors p-2 -mr-2">
-                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-                  </button>
                 </li>
               ))}
             </ul>
@@ -685,8 +869,8 @@ function WorkoutPlanner() {
         </div>
       )}
 
-      {history.length === 0 && !todayEntry && (
-        <Card className="p-8 text-center"><p className="text-3xl mb-3">💪</p><p className="text-slate-400 text-sm">Plan je eerste workout en vink hem af als je klaar bent.</p></Card>
+      {history.length === 0 && !isSaved && (
+        <Card className="p-8 text-center"><p className="text-3xl mb-3">💪</p><p className="text-slate-400 text-sm">Selecteer de spiergroepen die je vandaag traint en sla op.</p></Card>
       )}
     </div>
   );
@@ -833,30 +1017,563 @@ function fmtDateShort(key) {
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
+// DAY DETAIL MODAL
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function DayDetailModal({ dateKey, onClose }) {
+  const { state, toggleRestDay, setDayNote, editDayChecks, addFoodItem, deleteFoodItem, duplicateDay, todayKey } = useStore();
+  const tk = todayKey();
+  const isToday = dateKey === tk;
+  const isRest = !!(state.restDays?.[dateKey]);
+  const [note, setNote] = React.useState(state.dayNotes?.[dateKey] || '');
+  const [noteSaved, setNoteSaved] = React.useState(false);
+  const [showFoodModal, setShowFoodModal] = React.useState(false);
+  const [duplicated, setDuplicated] = React.useState(false);
+
+  const histEntry = isToday ? state.today : (state.history[dateKey] || {});
+  const foodLog = state.dailyFoodLog?.[dateKey] || [];
+  const totalCals = state.dailyCalories?.[dateKey] || 0;
+  const goal = state.calorieGoal;
+
+  const checks = { workout: !!histEntry.workout, calories: !!histEntry.calories, creatine: !!histEntry.creatine };
+  const goalCount = [checks.workout, checks.calories, checks.creatine].filter(Boolean).length;
+  const goalPct = Math.round((goalCount / 3) * 100);
+  const isResting = !!(state.restDays?.[dateKey]);
+  const statusColor = dayStatusColor(isResting ? 'rest' : (histEntry.success ? 'done' : 'missed'), isResting ? -1 : goalPct, isResting);
+
+  const checkItems = [
+    { key: 'workout', label: 'Workout gedaan', icon: '💪' },
+    { key: 'calories', label: 'Caloriedoel gehaald', icon: '🥗' },
+    { key: 'creatine', label: 'Creatine genomen', icon: '💊' },
+  ];
+  const PORTION_LABELS = { klein: 'Klein', normaal: 'Normaal', groot: 'Groot' };
+
+  const handleToggle = (key) => {
+    if (isToday && state.today.completed) return;
+    editDayChecks(dateKey, { [key]: !checks[key] });
+  };
+
+  const handleSaveNote = () => {
+    setDayNote(dateKey, note);
+    setNoteSaved(true);
+    setTimeout(() => setNoteSaved(false), 2000);
+  };
+
+  const handleDuplicate = () => {
+    if (dateKey === tk) return;
+    duplicateDay(dateKey, tk);
+    setDuplicated(true);
+    setTimeout(() => setDuplicated(false), 2000);
+  };
+
+  const fmtFull = (key) => {
+    const [y, m, d] = key.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString('nl-BE', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-t-3xl w-full max-w-lg flex flex-col animate-pop-in shadow-2xl" style={{ maxHeight: '90vh' }} onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mt-3 mb-2 flex-shrink-0" />
+
+        <div className="px-4 pb-3 flex-shrink-0 border-b border-slate-100">
+          <div className="flex items-start justify-between">
+            <div>
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest capitalize">{fmtFull(dateKey)}</p>
+              <div className="flex items-center gap-2 mt-1">
+                <div className="w-3 h-3 rounded-sm" style={{ background: statusColor }} />
+                <span className="text-sm font-semibold text-slate-700">
+                  {isResting ? 'Rustdag' : histEntry.success ? '3/3 doelen gehaald' : `${goalCount}/3 doelen`}
+                </span>
+              </div>
+            </div>
+            <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1 mt-0.5">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+            </button>
+          </div>
+          <div className="flex gap-2 mt-3">
+            <button onClick={() => toggleRestDay(dateKey)}
+              className={`flex-1 py-2 rounded-xl text-xs font-semibold border transition-colors ${isResting ? 'bg-slate-200 text-slate-700 border-slate-300' : 'bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100'}`}>
+              {isResting ? '✓ Rustdag' : 'Rustdag markeren'}
+            </button>
+            {!isToday && (
+              <button onClick={handleDuplicate}
+                className="flex-1 py-2 rounded-xl text-xs font-semibold border bg-slate-50 text-slate-500 border-slate-200 hover:bg-slate-100 transition-colors">
+                {duplicated ? '✓ Gekopieerd!' : 'Kopieer naar vandaag'}
+              </button>
+            )}
+          </div>
+        </div>
+
+        <div className="overflow-y-auto flex-1 px-4 pt-4 pb-6 space-y-5">
+
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Doelen</p>
+            <div className="space-y-1.5">
+              {checkItems.map(({ key, label, icon }) => {
+                const done = checks[key];
+                const locked = isToday && state.today.completed;
+                return (
+                  <button key={key} onClick={() => handleToggle(key)} disabled={locked}
+                    className={`w-full flex items-center gap-3 p-3 rounded-xl border-2 transition-all text-left
+                      ${done ? 'border-teal-500 bg-teal-50' : 'border-slate-100 bg-slate-50'}
+                      ${locked ? 'opacity-60 cursor-not-allowed' : ''}`}>
+                    <span className="text-lg">{icon}</span>
+                    <span className={`flex-1 text-sm font-semibold ${done ? 'text-teal-700 line-through' : 'text-slate-700'}`}>{label}</span>
+                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center shrink-0 ${done ? 'border-teal-500 bg-teal-500' : 'border-slate-300'}`}>
+                      {done && <svg width="9" height="9" viewBox="0 0 12 12" fill="none"><path d="M2.5 6.5L5 9L9.5 3.5" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Calorieën</p>
+              <button onClick={() => setShowFoodModal(true)} className="text-xs font-semibold text-teal-600">+ Toevoegen</button>
+            </div>
+            <div className="bg-slate-50 rounded-xl px-4 py-3 mb-2">
+              <div className="flex items-baseline gap-1.5">
+                <span className="text-2xl font-bold font-mono text-slate-900">{totalCals.toLocaleString('nl-BE')}</span>
+                <span className="text-sm text-slate-400 font-mono">/ {goal.toLocaleString('nl-BE')} kcal</span>
+              </div>
+              <ProgressBar value={totalCals} max={goal} color={totalCals >= goal ? 'green' : 'teal'} className="h-1.5 mt-2" />
+            </div>
+            {foodLog.length > 0 ? (
+              <ul className="space-y-1">
+                {foodLog.map((item, i) => (
+                  <li key={i} className="flex items-center gap-2 px-3 py-2.5 bg-white rounded-xl border border-slate-100">
+                    <div className="flex-1 min-w-0">
+                      <p className="text-xs font-semibold text-slate-800 truncate">{item.name}</p>
+                      {item.portion && item.portion !== 'normaal' && (
+                        <p className="text-[10px] text-slate-400">{PORTION_LABELS[item.portion] || item.portion}</p>
+                      )}
+                    </div>
+                    <span className="text-xs font-bold font-mono text-teal-600 shrink-0">{item.portionKcal} kcal</span>
+                    <button onClick={() => deleteFoodItem(dateKey, i)} className="text-slate-200 hover:text-red-400 transition-colors p-1 shrink-0">
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p className="text-xs text-slate-300 text-center py-2">Geen items gelogd</p>
+            )}
+          </div>
+
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Notities</p>
+            <textarea value={note} onChange={e => { setNote(e.target.value); setNoteSaved(false); }} onBlur={handleSaveNote}
+              placeholder="Voeg een notitie toe..." rows={3}
+              className="w-full px-3 py-2.5 rounded-xl border border-slate-200 bg-white text-slate-800 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-teal-400 placeholder:text-slate-300" />
+            <div className="flex justify-between items-center mt-1">
+              {noteSaved ? <p className="text-xs text-teal-500">✓ Opgeslagen</p> : <span />}
+              <button onClick={handleSaveNote} className="text-xs font-semibold text-teal-600">Opslaan</button>
+            </div>
+          </div>
+        </div>
+
+        {showFoodModal && <FoodLogModal onClose={() => setShowFoodModal(false)} onAdd={item => addFoodItem(dateKey, item)} todayCals={totalCals} />}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// HISTORY VIEW
+// ═══════════════════════════════════════════════════════════════════════════════
+
+function HistoryView({ onClose, onDayClick }) {
+  const { state, todayKey } = useStore();
+  const tk = todayKey();
+  const [filter, setFilter] = React.useState('all');
+
+  const allDates = React.useMemo(() => {
+    const keys = new Set([
+      ...Object.keys(state.history || {}),
+      ...Object.keys(state.dailyCalories || {}),
+      ...Object.keys(state.dailyFoodLog || {}),
+      ...Object.keys(state.restDays || {}),
+    ]);
+    keys.delete(tk);
+    return [...keys].sort((a, b) => b.localeCompare(a));
+  }, [state, tk]);
+
+  const today_js = new Date();
+  const mkOffset = (days) => { const d = new Date(today_js); d.setDate(today_js.getDate() - days); return todayKey(d); };
+  const weekStart = mkOffset(7);
+  const monthStart = mkOffset(30);
+
+  const filtered = allDates.filter(date => {
+    if (filter === 'week')    return date >= weekStart;
+    if (filter === 'month')   return date >= monthStart;
+    if (filter === 'success') return !!state.history[date]?.success;
+    if (filter === 'rest')    return !!(state.restDays?.[date]);
+    return true;
+  });
+
+  const successDays = allDates.filter(d => state.history[d]?.success).length;
+  const restDaysCount = Object.keys(state.restDays || {}).filter(d => d !== tk).length;
+  const calEntries = allDates.filter(d => (state.dailyCalories?.[d] || 0) > 0);
+  const avgCals = calEntries.length
+    ? Math.round(calEntries.reduce((s, d) => s + (state.dailyCalories[d] || 0), 0) / calEntries.length)
+    : 0;
+
+  return (
+    <div className="fixed inset-0 z-50 bg-slate-50 overflow-y-auto">
+      <div className="max-w-lg mx-auto px-4 pt-4 pb-24">
+        <div className="flex items-center justify-between pt-2 mb-4">
+          <div>
+            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Overzicht</p>
+            <h1 className="text-2xl font-bold text-slate-900 mt-0.5">Geschiedenis</h1>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-2 rounded-xl hover:bg-slate-100 transition-colors">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mb-4">
+          <Stat label="Succesvolle dagen" value={successDays} />
+          <Stat label="Rustdagen" value={restDaysCount} />
+          <Stat label="Gem. calorieën" value={avgCals > 0 ? avgCals.toLocaleString('nl-BE') : '—'} unit={avgCals > 0 ? 'kcal' : ''} />
+          <Stat label="Beste streak" value={state.bestStreak} unit="d" />
+        </div>
+
+        <div className="flex gap-2 overflow-x-auto mb-4 pb-1" style={{ scrollbarWidth: 'none' }}>
+          {[
+            { id: 'all', label: 'Alles' }, { id: 'week', label: 'Afgelopen week' },
+            { id: 'month', label: 'Afgelopen maand' }, { id: 'success', label: 'Succesvol' }, { id: 'rest', label: 'Rustdagen' },
+          ].map(f => (
+            <button key={f.id} onClick={() => setFilter(f.id)}
+              className={`whitespace-nowrap px-3 py-1.5 rounded-xl text-xs font-semibold flex-shrink-0 transition-colors ${filter === f.id ? 'bg-slate-900 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+              {f.label}
+            </button>
+          ))}
+        </div>
+
+        {filtered.length === 0 ? (
+          <Card className="p-8 text-center">
+            <p className="text-3xl mb-2">📅</p>
+            <p className="text-slate-400 text-sm">Geen dagen gevonden</p>
+          </Card>
+        ) : (
+          <Card>
+            <ul className="divide-y divide-slate-100">
+              {filtered.map(date => {
+                const entry = state.history[date] || {};
+                const isRest = !!(state.restDays?.[date]);
+                const cals = state.dailyCalories?.[date] || 0;
+                const hasNote = !!(state.dayNotes?.[date]);
+                const goalCount = [entry.workout, entry.calories, entry.creatine].filter(Boolean).length;
+                const goalPct = Math.round((goalCount / 3) * 100);
+                const bg = dayStatusColor(isRest ? 'rest' : (entry.success ? 'done' : 'missed'), isRest ? -1 : goalPct, isRest);
+                const tc = dayTextColor(isRest ? 'rest' : (entry.success ? 'done' : 'missed'), isRest ? -1 : goalPct, isRest);
+                return (
+                  <li key={date}>
+                    <button onClick={() => onDayClick(date)}
+                      className="w-full flex items-center gap-3 px-4 py-3.5 text-left hover:bg-slate-50 active:bg-slate-100 transition-colors">
+                      <div className="w-10 h-10 rounded-xl flex items-center justify-center shrink-0" style={{ background: bg }}>
+                        <span className="text-xs font-bold" style={{ color: tc }}>
+                          {isRest ? 'R' : entry.success ? '✓' : goalCount > 0 ? `${goalCount}/3` : '✗'}
+                        </span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="text-sm font-bold text-slate-800">{fmtDate(date)}</p>
+                        <p className="text-xs text-slate-400 mt-0.5">
+                          {isRest ? 'Rustdag' : `${goalCount}/3 doelen`}
+                          {cals > 0 ? ` · ${cals.toLocaleString('nl-BE')} kcal` : ''}
+                          {hasNote ? ' · 📝' : ''}
+                        </p>
+                      </div>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" className="text-slate-300 shrink-0"><path d="M9 18l6-6-6-6"/></svg>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+          </Card>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════════════════════
 // CALORIE TRACKER
 // ═══════════════════════════════════════════════════════════════════════════════
 
+function FoodLogModal({ onClose, onAdd, todayCals }) {
+  const [tab, setTab] = React.useState('list');
+  const [catIndex, setCatIndex] = React.useState(0);
+  const [selectedItem, setSelectedItem] = React.useState(null);
+  const [portion, setPortion] = React.useState('normaal');
+  const [selectedBeleg, setSelectedBeleg] = React.useState(null);
+  const [belegQty, setBelegQty] = React.useState(null);
+  const [customName, setCustomName] = React.useState('');
+  const [customKcal, setCustomKcal] = React.useState('');
+  const [customPortion, setCustomPortion] = React.useState('normaal');
+  const [lastAdded, setLastAdded] = React.useState(null);
+
+  const isBroodCat = FOOD_CATEGORIES[catIndex]?.name === 'Brood';
+  const PORTION_LABELS = { klein: 'Klein', normaal: 'Normaal', groot: 'Groot' };
+  const allBeleg = [
+    ...BELEG_SCHELLETJES.map(b => ({ ...b, type: 'schelletjes' })),
+    ...BELEG_SMEERBAAR.map(b => ({ ...b, type: 'smeerbaar' })),
+  ];
+
+  const resetBreadState = () => { setSelectedItem(null); setSelectedBeleg(null); setBelegQty(null); };
+
+  const handleCatChange = (i) => { setCatIndex(i); resetBreadState(); setPortion('normaal'); };
+
+  const handleSelectBread = (item) => {
+    if (selectedItem?.name === item.name) { resetBreadState(); return; }
+    setSelectedItem(item);
+    setSelectedBeleg(null);
+    setBelegQty(null);
+  };
+
+  const handleSelectBeleg = (beleg) => {
+    if (selectedBeleg?.name === beleg.name) { setSelectedBeleg(null); setBelegQty(null); return; }
+    setSelectedBeleg(beleg);
+    setBelegQty(beleg.type === 'schelletjes' ? 2 : 'normaal');
+  };
+
+  const getBelegKcal = () => {
+    if (!selectedBeleg || belegQty === null) return 0;
+    return selectedBeleg.type === 'schelletjes'
+      ? selectedBeleg.kcalPerSchel * belegQty
+      : selectedBeleg.kcal[belegQty];
+  };
+
+  const breadTotalKcal = selectedItem && isBroodCat && selectedBeleg && belegQty !== null
+    ? selectedItem.kcal + getBelegKcal()
+    : 0;
+
+  const handleAddBread = () => {
+    if (!selectedItem || !selectedBeleg || belegQty === null) return;
+    const belegKcal = getBelegKcal();
+    const totalKcal = selectedItem.kcal + belegKcal;
+    const qtyLabel = selectedBeleg.type === 'schelletjes'
+      ? `${belegQty} ${belegQty === 1 ? 'schel' : 'schellen'}`
+      : { licht: 'licht gesmeerd', normaal: 'normaal gesmeerd', dik: 'dik gesmeerd' }[belegQty];
+    const name = `${selectedItem.name} + ${selectedBeleg.name} (${qtyLabel})`;
+    onAdd({ name, portion: 'normaal', baseKcal: totalKcal, portionKcal: totalKcal });
+    setLastAdded({ name, portionKcal: totalKcal, breadKcal: selectedItem.kcal, belegKcal, isBread: true });
+    resetBreadState();
+  };
+
+  const handleAddItem = () => {
+    if (!selectedItem) return;
+    const portionKcal = Math.round(selectedItem.kcal * PORTION_MULTIPLIERS[portion]);
+    onAdd({ name: selectedItem.name, portion, baseKcal: selectedItem.kcal, portionKcal });
+    setLastAdded({ name: selectedItem.name, portion, portionKcal, isBread: false });
+    setSelectedItem(null);
+    setPortion('normaal');
+  };
+
+  const handleAddCustom = () => {
+    const base = parseInt(customKcal, 10);
+    if (!customKcal || isNaN(base) || base <= 0) return;
+    const name = customName.trim() || 'Aangepast gerecht';
+    const portionKcal = Math.round(base * PORTION_MULTIPLIERS[customPortion]);
+    onAdd({ name, portion: customPortion, baseKcal: base, portionKcal });
+    setLastAdded({ name, portion: customPortion, portionKcal, isBread: false });
+    setCustomName('');
+    setCustomKcal('');
+    setCustomPortion('normaal');
+  };
+
+  const selectedKcal = selectedItem && !isBroodCat ? Math.round(selectedItem.kcal * PORTION_MULTIPLIERS[portion]) : 0;
+  const customBase = parseInt(customKcal, 10) || 0;
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-white rounded-t-3xl w-full max-w-lg flex flex-col animate-pop-in shadow-2xl" style={{ maxHeight: '85vh' }} onClick={e => e.stopPropagation()}>
+        <div className="w-10 h-1 bg-slate-200 rounded-full mx-auto mt-3 mb-2 flex-shrink-0" />
+        <div className="flex items-center justify-between px-4 pb-3 flex-shrink-0">
+          <h2 className="text-lg font-bold text-slate-900">Log calorieën</h2>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 p-1">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        {lastAdded && (
+          <div className="mx-4 mb-3 px-4 py-2.5 bg-teal-50 rounded-xl flex-shrink-0">
+            <p className="text-teal-700 font-semibold text-sm">✓ {lastAdded.name}</p>
+            {lastAdded.isBread
+              ? <p className="text-teal-500 text-xs mt-0.5">Brood: {lastAdded.breadKcal} kcal + Beleg: {lastAdded.belegKcal} kcal = {lastAdded.portionKcal} kcal</p>
+              : <p className="text-teal-500 text-xs mt-0.5">{PORTION_LABELS[lastAdded.portion]} · {lastAdded.portionKcal} kcal</p>
+            }
+            <p className="text-teal-400 text-xs mt-0.5 font-semibold">Dagtotaal: {todayCals.toLocaleString('nl-BE')} kcal</p>
+          </div>
+        )}
+        <div className="flex gap-2 px-4 pb-3 flex-shrink-0">
+          {['list', 'custom'].map(t => (
+            <button key={t} onClick={() => setTab(t)}
+              className={`flex-1 py-2 rounded-xl text-sm font-semibold transition-colors ${tab === t ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>
+              {t === 'list' ? 'Uit de lijst' : 'Zelf toevoegen'}
+            </button>
+          ))}
+        </div>
+        {tab === 'list' ? (
+          <>
+            <div className="flex gap-2 px-4 pb-3 overflow-x-auto flex-shrink-0" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+              {FOOD_CATEGORIES.map((cat, i) => (
+                <button key={i} onClick={() => handleCatChange(i)}
+                  className={`whitespace-nowrap px-3 py-1.5 rounded-xl text-xs font-semibold flex-shrink-0 transition-colors ${catIndex === i ? 'bg-teal-500 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                  {cat.name}
+                </button>
+              ))}
+            </div>
+            <div className="overflow-y-auto flex-1 px-4 pb-6">
+              <ul className="space-y-1.5">
+                {FOOD_CATEGORIES[catIndex].items.map((item, i) => {
+                  const isSel = selectedItem?.name === item.name;
+                  return (
+                    <li key={i}>
+                      <button
+                        onClick={() => isBroodCat ? handleSelectBread(item) : (setSelectedItem(isSel ? null : item), setPortion('normaal'))}
+                        className={`w-full flex items-center justify-between px-3.5 py-3 rounded-xl border-2 transition-all text-left
+                          ${isSel ? 'border-teal-500 bg-teal-50' : 'border-slate-100 bg-slate-50'}`}>
+                        <span className={`text-sm font-semibold ${isSel ? 'text-teal-700' : 'text-slate-700'}`}>{item.name}</span>
+                        <span className={`text-xs font-mono font-bold ml-2 shrink-0 ${isSel ? 'text-teal-500' : 'text-slate-400'}`}>{item.kcal} kcal</span>
+                      </button>
+
+                      {/* BROOD FLOW */}
+                      {isSel && isBroodCat && (
+                        <div className="mt-1 p-3 bg-teal-50 border border-teal-100 rounded-xl space-y-3">
+                          <p className="text-xs font-bold text-teal-700 uppercase tracking-wider">Stap 2 — Kies beleg</p>
+                          <div className="grid grid-cols-2 gap-1.5">
+                            {allBeleg.map(beleg => {
+                              const isBSel = selectedBeleg?.name === beleg.name;
+                              return (
+                                <button key={beleg.name} onClick={() => handleSelectBeleg(beleg)}
+                                  className={`flex items-center justify-between px-3 py-2.5 rounded-xl border-2 text-left transition-all
+                                    ${isBSel ? 'border-teal-500 bg-teal-100' : 'border-white bg-white'}`}>
+                                  <span className={`text-xs font-semibold ${isBSel ? 'text-teal-700' : 'text-slate-700'}`}>{beleg.name}</span>
+                                  <span className={`text-[10px] font-mono ml-1 shrink-0 ${isBSel ? 'text-teal-500' : 'text-slate-400'}`}>
+                                    {beleg.type === 'schelletjes' ? `${beleg.kcalPerSchel}/schel` : 'smeerb.'}
+                                  </span>
+                                </button>
+                              );
+                            })}
+                          </div>
+
+                          {selectedBeleg && (
+                            <div className="space-y-2 pt-1 border-t border-teal-200">
+                              <p className="text-xs font-bold text-teal-700 uppercase tracking-wider pt-1">
+                                Stap 3 — {selectedBeleg.type === 'schelletjes' ? 'Hoeveel schellen?' : 'Hoeveel gesmeerd?'}
+                              </p>
+                              <div className={`grid gap-2 ${selectedBeleg.type === 'schelletjes' ? 'grid-cols-4' : 'grid-cols-3'}`}>
+                                {selectedBeleg.type === 'schelletjes'
+                                  ? [1, 2, 3, 4].map(n => (
+                                      <button key={n} onClick={() => setBelegQty(n)}
+                                        className={`py-2.5 rounded-xl text-xs font-semibold flex flex-col items-center gap-0.5 transition-colors
+                                          ${belegQty === n ? 'bg-teal-500 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+                                        <span>{n} {n === 1 ? 'schel' : 'schel.'}</span>
+                                        <span className="font-mono">{selectedBeleg.kcalPerSchel * n} kcal</span>
+                                      </button>
+                                    ))
+                                  : ['licht', 'normaal', 'dik'].map(level => (
+                                      <button key={level} onClick={() => setBelegQty(level)}
+                                        className={`py-2.5 rounded-xl text-xs font-semibold flex flex-col items-center gap-0.5 transition-colors
+                                          ${belegQty === level ? 'bg-teal-500 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+                                        <span>{level === 'licht' ? 'Licht' : level === 'normaal' ? 'Normaal' : 'Dik'}</span>
+                                        <span className="font-mono">{selectedBeleg.kcal[level]} kcal</span>
+                                      </button>
+                                    ))
+                                }
+                              </div>
+                              {belegQty !== null && (
+                                <>
+                                  <div className="bg-white rounded-xl px-3 py-2 text-xs text-slate-500 border border-teal-100">
+                                    Brood <span className="font-mono font-bold text-slate-800">{item.kcal}</span>
+                                    {' '}+ Beleg <span className="font-mono font-bold text-slate-800">{getBelegKcal()}</span>
+                                    {' '}= <span className="font-mono font-bold text-teal-700">{breadTotalKcal} kcal</span>
+                                  </div>
+                                  <Button onClick={handleAddBread} variant="brand" className="w-full">
+                                    + {breadTotalKcal} kcal toevoegen
+                                  </Button>
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      {/* NORMALE PORTIE PICKER */}
+                      {isSel && !isBroodCat && (
+                        <div className="mt-1 p-3 bg-teal-50 border border-teal-100 rounded-xl space-y-2.5">
+                          <div className="grid grid-cols-3 gap-2">
+                            {[['klein', 0.8], ['normaal', 1.0], ['groot', 1.3]].map(([key, mult]) => (
+                              <button key={key} onClick={() => setPortion(key)}
+                                className={`py-2.5 rounded-xl text-xs font-semibold transition-colors flex flex-col items-center gap-0.5
+                                  ${portion === key ? 'bg-teal-500 text-white' : 'bg-white text-slate-600 border border-slate-200'}`}>
+                                <span>{key === 'klein' ? 'Klein' : key === 'normaal' ? 'Normaal' : 'Groot'}</span>
+                                <span className="font-mono">{Math.round(item.kcal * mult)} kcal</span>
+                              </button>
+                            ))}
+                          </div>
+                          <Button onClick={handleAddItem} variant="brand" className="w-full">
+                            + {selectedKcal} kcal toevoegen
+                          </Button>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            </div>
+          </>
+        ) : (
+          <div className="px-4 space-y-3 overflow-y-auto flex-1 pb-6">
+            <Input placeholder="Naam gerecht (optioneel)" value={customName} onChange={e => setCustomName(e.target.value)} />
+            <Input type="number" inputMode="numeric" placeholder="Calorieën (kcal)" value={customKcal} onChange={e => setCustomKcal(e.target.value)} />
+            <p className="text-xs text-slate-400 font-semibold uppercase tracking-wider">Portiegrootte</p>
+            <div className="grid grid-cols-3 gap-2">
+              {[['klein', 0.8], ['normaal', 1.0], ['groot', 1.3]].map(([key, mult]) => (
+                <button key={key} onClick={() => setCustomPortion(key)}
+                  className={`py-2.5 rounded-xl text-xs font-semibold transition-colors flex flex-col items-center gap-0.5
+                    ${customPortion === key ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'}`}>
+                  <span>{key === 'klein' ? 'Klein' : key === 'normaal' ? 'Normaal' : 'Groot'}</span>
+                  {customBase > 0 && <span className="font-mono">{Math.round(customBase * mult)} kcal</span>}
+                </button>
+              ))}
+            </div>
+            <Button onClick={handleAddCustom} variant="brand" className="w-full" disabled={!customKcal || parseInt(customKcal, 10) <= 0}>
+              Toevoegen
+            </Button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function CalorieTracker() {
-  const { state, logCalories, setCalorieGoal, toggleCheck, todayKey } = useStore();
+  const { state, addFoodItem, deleteFoodItem, setCalorieGoal, toggleCheck, todayKey } = useStore();
   const today = todayKey();
   const todayCals = state.dailyCalories?.[today] || 0;
   const goal = state.calorieGoal;
   const pct = Math.min(100, (todayCals / goal) * 100);
   const remaining = Math.max(0, goal - todayCals);
   const creatineDone = state.today.creatine;
+  const foodLog = state.dailyFoodLog?.[today] || [];
 
-  const [calorieInput, setCalorieInput] = React.useState('');
-  const [goalInput, setGoalInput]       = React.useState('');
-  const [editingGoal, setEditingGoal]   = React.useState(false);
+  const [showModal, setShowModal] = React.useState(false);
+  const [goalInput, setGoalInput] = React.useState('');
+  const [editingGoal, setEditingGoal] = React.useState(false);
 
-  const handleLogCalories = () => { const val = calorieInput.trim(); if (!val) return; logCalories(today, val); setCalorieInput(''); };
-  const handleSetGoal     = () => { const val = goalInput.trim(); if (!val) return; setCalorieGoal(val); setGoalInput(''); setEditingGoal(false); };
-
+  const handleSetGoal = () => { const val = goalInput.trim(); if (!val) return; setCalorieGoal(val); setGoalInput(''); setEditingGoal(false); };
   const history = Object.entries(state.dailyCalories || {}).sort((a, b) => a[0] < b[0] ? 1 : -1).slice(0, 14);
   const calColor = pct >= 100 ? 'green' : pct >= 80 ? 'amber' : 'teal';
+  const PORTION_LABELS = { klein: 'Klein', normaal: 'Normaal', groot: 'Groot' };
 
   return (
     <div className="space-y-4">
+      {showModal && <FoodLogModal onClose={() => setShowModal(false)} onAdd={item => addFoodItem(today, item)} todayCals={todayCals} />}
+
       <div className="pt-2">
         <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">Vandaag</p>
         <h1 className="text-2xl font-bold text-slate-900 mt-0.5">Calorieën</h1>
@@ -886,14 +1603,28 @@ function CalorieTracker() {
       </Card>
 
       <Card className="p-4">
-        <h2 className="font-bold text-slate-900 mb-3">Log calorieën</h2>
-        <div className="flex gap-2">
-          <Input type="number" inputMode="numeric" min="0" max="10000" value={calorieInput}
-            onChange={e => setCalorieInput(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleLogCalories()}
-            placeholder={todayCals > 0 ? `${todayCals} kcal (vervang)` : 'bv. 1800'} className="flex-1" />
-          <Button onClick={handleLogCalories} variant="brand">Log</Button>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="font-bold text-slate-900">Vandaag gegeten</h2>
+          <Button onClick={() => setShowModal(true)} variant="brand" className="py-2 px-3 text-xs">+ Log calorieën</Button>
         </div>
-        {todayCals > 0 && <p className="text-xs text-slate-400 mt-2">Huidig: <span className="font-mono font-semibold">{todayCals.toLocaleString('nl-BE')} kcal</span>. Nieuw getal vervangt.</p>}
+        {foodLog.length === 0 ? (
+          <p className="text-sm text-slate-300 text-center py-4">Nog niets gelogd vandaag</p>
+        ) : (
+          <ul className="divide-y divide-slate-50">
+            {foodLog.map((item, i) => (
+              <li key={i} className="flex items-center gap-3 py-2.5">
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-semibold text-slate-800 truncate">{item.name}</p>
+                  <p className="text-xs text-slate-400">{PORTION_LABELS[item.portion] || item.portion}</p>
+                </div>
+                <span className="text-sm font-bold font-mono text-teal-600 shrink-0">{item.portionKcal} kcal</span>
+                <button onClick={() => deleteFoodItem(today, i)} className="text-slate-200 hover:text-red-400 transition-colors p-1 shrink-0">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
       </Card>
 
       <Card className="p-4">
@@ -1001,3 +1732,4 @@ ReactDOM.createRoot(document.getElementById('root')).render(<App />);
     </script>
   </body>
 </html>
+
